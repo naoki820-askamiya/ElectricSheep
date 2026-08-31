@@ -7,6 +7,7 @@ import {
   persistentLocalCache,
   persistentSingleTabManager,
 } from "firebase/firestore";
+import { getAuth, onAuthStateChanged, signInAnonymously } from "firebase/auth";
 
 // このapiKeyは公開されても問題ない値(セキュリティはFirestoreのセキュリティルール側で担保する)
 const firebaseConfig = {
@@ -26,4 +27,27 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentSingleTabManager(undefined),
   }),
+});
+
+export const auth = getAuth(app);
+
+// 匿名認証。初回アクセス時にサインインし、以後はブラウザに保存された同じuidが復元される。
+// db.ts はこのPromiseを待ってからuidを使うことで、認証完了前のFirestoreアクセスを防ぐ。
+// ※ Firebaseコンソールの Authentication > Sign-in method で「匿名」プロバイダを
+//   有効化しておくこと(コードだけでは有効化できない)
+export const currentUserId: Promise<string> = new Promise((resolve, reject) => {
+  const unsubscribe = onAuthStateChanged(
+    auth,
+    (user) => {
+      unsubscribe();
+      if (user) {
+        resolve(user.uid);
+        return;
+      }
+      signInAnonymously(auth)
+        .then((credential) => resolve(credential.user.uid))
+        .catch(reject);
+    },
+    reject
+  );
 });

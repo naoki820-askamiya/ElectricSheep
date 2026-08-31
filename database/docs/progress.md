@@ -1,6 +1,6 @@
 # 進捗状況(データベース担当)
 
-最終更新: 2026-08-22
+最終更新: 2026-08-31
 
 ## 全体の役割分担
 
@@ -25,7 +25,9 @@ Raspberry Piでの実装コストが高いため、以下の役割分担に変�
 - `cloud/` フォルダに `firebase init firestore` でFirebase設定を配置
   - `firebase.json` / `.firebaserc` / `firestore.rules` / `firestore.indexes.json`
 - 複合インデックスを1つデプロイ済み(`visits` コレクションを `placeId` + `visitedAt` で検索するため)
-- **セキュリティルールは未対応**(テストモードのまま、誰でも読み書き可能)
+- **セキュリティルールを本実装・デプロイ済み**(`request.auth.uid == userId` で本人のデータのみ許可。テストモードは2026-09-16に期限切れ予定だったため、それより前に切り替えた)
+  - Firebaseコンソールで匿名認証プロバイダを有効化(**自動クリーンアップはOFFのまま**。ONだと30日操作がないと匿名アカウントが消え、一生分の思い出という製品コンセプト上致命的なため)
+  - `firestore.rules` もコンソールから公開済み
 - **課金プランはSpark(無料)のまま**。クレジットカード登録なし
 
 ## データ設計(スキーマ)
@@ -52,21 +54,23 @@ users/{userId}
 
 Next.jsプロジェクトができ次第、`src/lib/` などにコピーして使う想定。
 
-- `firebase.ts` — Firebase Web SDKの初期化。オフラインキャッシュ(`persistentLocalCache`)を有効化済み。これが端末側ローカルDBの役割を担う
-- `db.ts` — データ操作関数
+- `firebase.ts` — Firebase Web SDKの初期化。オフラインキャッシュ(`persistentLocalCache`)を有効化済み。これが端末側ローカルDBの役割を担う。**匿名認証(`signInAnonymously`)を追加し、`currentUserId`(Promise<string>)としてuidを export するようにした**
+- `db.ts` — データ操作関数(**`DEFAULT_USER_ID`は廃止。`userId`省略時は`currentUserId`を解決して使う**)
   - `addPlace` / `addVisit` — 場所・訪問記録の保存
   - `getWishlist` / `getFavorites` — カテゴリ別の取得
   - `getVisitsForPlace` — ある場所の訪問履歴を取得
   - `findOrCreatePlace(lat, lng)` — GPS座標から近くの既存の場所を探し、なければNominatim(無料の逆ジオコーディングAPI)で地名を取得して自動登録
+  - `getMemoriesOnThisDay(userId, yearsAgo, windowDays)` — 「N年前の今日(前後windowDays日)」に訪れた場所を、場所情報付きで取得。会話の「1年前の今日は〜」を実現するための関数
 - `README.md` — 組み込み方・注意点
+
+### `cloud/firestore.rules`
+
+テストモード(全許可)から、`request.auth.uid == userId` ベースの本実装に切り替え済み。`device/firestore_client.py` はfirebase-admin SDK(サービスアカウント)経由なのでこのルールの影響を受けない。
 
 ## 未着手のタスク
 
 優先度が高い順:
 
-1. **認証(Firebase Auth)** — 現在は `DEFAULT_USER_ID` という仮のIDで全データを1人分として扱っている。匿名認証の導入を検討中
-2. **セキュリティルールの本実装** — テストモードのままなので、認証導入後に「自分のデータしか読み書きできない」ルールへ切り替える必要がある
-3. **「1年前の今日」のような想起クエリ** — まだ関数として実装していない
-4. **Next.jsプロジェクトへの統合** — プロジェクト自体がまだ存在しないため未着手。できたら `web-reference/` の中身をコピーする
-5. **会話要約・気分データの書き込み元の調整** — Gemini連携(なおき担当)からどう `addVisit()` を呼ぶかの繋ぎ込み
-6. **Raspberry Pi→スマホのデータ連携方法** — Bluetoothなどでの連携方法は未設計
+1. **Next.jsプロジェクトへの統合** — **フロントエンドのプロジェクト自体は`frontend/`に既に存在している**(担当外のため本リポジトリのdatabase側では未着手のまま)。`web-reference/`の中身を`frontend/src/lib/`等にコピーし、`frontend/src/app/api/places/route.ts`などで`types/api.ts`の契約に合わせて呼び出す想定。フロント/バックエンド担当と要連携
+2. **会話要約・気分データの書き込み元の調整** — Gemini連携(なおき担当)からどう `addVisit()` を呼ぶかの繋ぎ込み
+3. **Raspberry Pi→スマホのデータ連携方法** — Bluetoothなどでの連携方法は未設計
