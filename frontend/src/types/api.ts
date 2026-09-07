@@ -35,6 +35,29 @@ export type Message = {
   createdAt: string;
 };
 
+/** Live APIが会話から判定した、場所を記録する意図。 */
+export type PlaceMentionIntent =
+  | "destination"
+  | "wishlist"
+  | "visited"
+  | "memory";
+
+/** Gemini Live APIのFunction Callingを経由してFirestoreへ保存した発言。 */
+export type PlaceMentionRecord = {
+  id: string;
+  placeId: string;
+  placeName: string;
+  intent: PlaceMentionIntent;
+  originalUtterance: string;
+  summary: string;
+  companions: string[];
+  mood?: string;
+  isDetour: boolean;
+  /** 発言時点の車の現在地。目的地そのものの座標とは限らない。 */
+  currentLocation?: LatLng;
+  recordedAt: string;
+};
+
 /* ------------------------------------------------------------------ */
 /* POST /api/chat  — 対話機能（コア機能）                              */
 /* ------------------------------------------------------------------ */

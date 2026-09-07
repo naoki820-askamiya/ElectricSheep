@@ -52,14 +52,18 @@ const WAKE_WORD_VARIANTS = [
   "パッセン",
 ];
 
-/** カタカナをひらがなに寄せ、空白と句読点を落として比較しやすくする */
-function normalize(text: string): string {
+/** カタカナをひらがなに寄せる。文字位置は変えない。 */
+function foldKana(text: string): string {
   return text
     .replace(/[ァ-ヶ]/g, (c) =>
       String.fromCharCode(c.charCodeAt(0) - 0x60),
     )
-    .replace(/[\s、。,.！!？?]/g, "")
     .toLowerCase();
+}
+
+/** 空白と句読点も落として比較しやすくする */
+function normalize(text: string): string {
+  return foldKana(text).replace(/[\s、。,.！!？?]/g, "");
 }
 
 /** 聞き取った文にウェイクワードが含まれるか */
@@ -74,16 +78,16 @@ export function containsWakeWord(text: string): boolean {
  * 「海に行きたい」だけを本文として扱うため。
  */
 export function stripWakeWord(text: string): string {
-  const normalized = normalize(text);
+  const folded = foldKana(text);
   let cut = -1;
 
   for (const word of WAKE_WORD_VARIANTS) {
-    const index = normalized.indexOf(normalize(word));
-    if (index >= 0) cut = Math.max(cut, index + normalize(word).length);
+    const foldedWord = foldKana(word);
+    const index = folded.indexOf(foldedWord);
+    if (index >= 0) cut = Math.max(cut, index + foldedWord.length);
   }
   if (cut < 0) return text.trim();
 
-  // normalize で文字数が変わらない前提の簡易的な切り出し
   return text.slice(cut).replace(/^[\s、。,.]+/, "").trim();
 }
 
