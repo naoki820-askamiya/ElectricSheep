@@ -27,6 +27,15 @@ const API_BASE_URL =
 /** モックモードかどうか */
 export const isMockMode = apiMode === "mock";
 
+/**
+ * 場所APIをモックで返すか。
+ *
+ * self モードは「フロント内蔵の暫定API」だが、実装してあるのは対話（/api/chat）だけ。
+ * 場所の保存先はゆづき・よしたかの担当で、まだ存在しない。
+ * そのため backend モード以外では場所はモックを使う。
+ */
+const placesUseMock = apiMode !== "backend";
+
 /** 画面に出す接続先の名前 */
 export const apiModeLabel: Record<ApiMode, string> = {
   mock: "モックモード",
@@ -78,7 +87,7 @@ export async function postChat(body: ChatRequest): Promise<ChatResponse> {
 
 /** 訪れた場所の一覧を取得 */
 export async function getPlaces(userId: string): Promise<GetPlacesResponse> {
-  if (isMockMode) {
+  if (placesUseMock) {
     await sleep(300);
     return { places: MOCK_PLACES };
   }
@@ -92,7 +101,7 @@ export async function getPlaces(userId: string): Promise<GetPlacesResponse> {
 export async function createPlace(
   body: CreatePlaceRequest,
 ): Promise<CreatePlaceResponse> {
-  if (isMockMode) {
+  if (placesUseMock) {
     await sleep(300);
     return {
       place: {
