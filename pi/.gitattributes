@@ -1,0 +1,4 @@
+# このフォルダの中身は Raspberry Pi (Linux) へ配るもの。
+# Windows で編集しても改行が CRLF にならないよう固定する。
+* text=auto eol=lf
+*.onnx binary

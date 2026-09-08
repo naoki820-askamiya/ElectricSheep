@@ -1,0 +1,11 @@
+{
+  "name": "passen-pi-stub",
+  "private": true,
+  "description": "検証用の偽サーバー。本番のサーバーとは無関係で、Pi 側だけ先に確かめるためのもの",
+  "scripts": {
+    "stub": "node ws_stub.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

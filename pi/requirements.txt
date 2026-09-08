@@ -1,0 +1,11 @@
+# Raspberry Pi の venv に入れるもの
+#   python3 -m venv venv
+#   ./venv/bin/pip install -r requirements.txt
+
+numpy
+onnxruntime          # openwakeword の推論に使う（tflite-runtime は Python 3.13 版が無い）
+openwakeword==0.4.0  # ウェイクワード検出
+websocket-client     # サーバーとの WebSocket 接続
+
+# 以下は legacy/ のスクリプトを動かす場合だけ
+# vosk               # Pi 内での音声認識。別途モデル(約48MB)の配置が必要
