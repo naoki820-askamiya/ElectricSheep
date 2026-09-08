@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Raspberry Pi側は独立したPython/Node.jsプロジェクトとして管理する。
+    "pi/**",
   ]),
 ]);
 

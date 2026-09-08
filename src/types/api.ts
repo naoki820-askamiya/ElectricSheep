@@ -11,8 +11,8 @@ export type LatLng = {
   lng: number;
 };
 
-/** 訪れた場所 / これから訪れる場所 */
-export type Place = {
+/** AIが会話中に提案する場所。Firestoreの場所マスターとは別の通信DTO。 */
+export type SuggestedPlace = {
   id: string;
   name: string;
   /** 住所や地名の表示用テキスト */
@@ -59,27 +59,7 @@ export type ChatResponse = {
    * AIが「行き先」を提案したときだけ入る。
    * これが入っていたらフロントは地図にピンを立てて「ここへ向かいますか？」を出す。
    */
-  suggestedPlace?: Place;
-};
-
-/* ------------------------------------------------------------------ */
-/* GET /api/places  — 訪れた場所の保存・取得                            */
-/* ------------------------------------------------------------------ */
-
-export type GetPlacesResponse = {
-  places: Place[];
-};
-
-/** POST /api/places — 場所を「訪れた」として記録する */
-export type CreatePlaceRequest = {
-  userId: string;
-  name: string;
-  location: LatLng;
-  memory?: string;
-};
-
-export type CreatePlaceResponse = {
-  place: Place;
+  suggestedPlace?: SuggestedPlace;
 };
 
 /* ------------------------------------------------------------------ */
@@ -88,8 +68,5 @@ export type CreatePlaceResponse = {
 
 /** APIがエラーを返すときの共通形式 */
 export type ApiError = {
-  error: {
-    code: string;
-    message: string;
-  };
+  error: string;
 };
