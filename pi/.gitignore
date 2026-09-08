@@ -1,0 +1,11 @@
+# Pi 上でだけ作られるもの。リポジトリには入れない
+venv/
+samples/
+recv/
+*.wav
+*.zip
+
+# Vosk の日本語モデル（約48MB）。README の手順で各自ダウンロードする
+vosk-model-*/
+
+node_modules/
