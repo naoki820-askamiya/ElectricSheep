@@ -5,7 +5,8 @@ import { apiMode, apiModeLabel, postChat } from "@/lib/api";
 import { MOCK_USER_ID } from "@/lib/mock/data";
 import { useGeolocation } from "@/hooks/useGeolocation";
 import { useVoiceAgent, type VoicePhase } from "@/hooks/useVoiceAgent";
-import type { Message, Place } from "@/types/api";
+import type { Message } from "@/types/api";
+import { Place } from '@/types/database';
 
 /** 各状態の見せ方。運転中に一目で分かることを優先する */
 const PHASE_LABEL: Record<VoicePhase, string> = {
@@ -202,9 +203,9 @@ export default function ChatPage() {
           <div className="rounded-2xl border border-blue-600/30 bg-blue-600/5 p-4">
             <p className="text-sm text-black/60 dark:text-white/60">行き先の提案</p>
             <p className="mt-1 text-xl font-medium">{suggested.name}</p>
-            {suggested.address && (
+            {suggested.name && (
               <p className="text-sm text-black/60 dark:text-white/60">
-                {suggested.address}
+                {suggested.name}
               </p>
             )}
             {/* TODO: 地図画面ができたらここから遷移させる */}

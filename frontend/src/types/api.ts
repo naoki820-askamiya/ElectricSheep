@@ -12,19 +12,21 @@ export type LatLng = {
 };
 
 /** 訪れた場所 / これから訪れる場所 */
-export type Place = {
-  id: string;
-  name: string;
-  /** 住所や地名の表示用テキスト */
-  address?: string;
-  location: LatLng;
-  /** 訪問済みなら ISO8601 の日時。未訪問なら undefined */
-  visitedAt?: string;
-  /** その場所にまつわる思い出（ユーザーが語った内容をLLMが要約したもの） */
-  memory?: string;
-  /** 写真URL（Want機能。無ければ undefined） */
-  photoUrl?: string;
-};
+//database.tsで代用するためコメントアウトしている
+//export type Place = {
+//  id: string;
+//  name: string;
+//  /** 住所や地名の表示用テキスト */
+//  address?: string;
+//  location: LatLng;
+//  /** 訪問済みなら ISO8601 の日時。未訪問なら undefined */
+//  visitedAt?: string;
+//  /** その場所にまつわる思い出（ユーザーが語った内容をLLMが要約したもの） */
+//  memory?: string;
+//  /** 写真URL（Want機能。無ければ undefined） */
+//  photoUrl?: string;
+//}; 
+
 
 /** 対話の1発言 */
 export type Message = {
@@ -51,6 +53,7 @@ export type ChatRequest = {
    */
   history?: Message[];
 };
+import { Place } from './database';
 
 export type ChatResponse = {
   /** AIの返答テキスト */

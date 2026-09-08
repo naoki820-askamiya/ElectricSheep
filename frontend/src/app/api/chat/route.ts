@@ -1,5 +1,5 @@
 import type { ChatRequest, ChatResponse } from "@/types/api";
-
+import type { Place } from "@/types/database"; 
 /**
  * 対話APIの暫定実装（Gemini を直接呼ぶ）。
  *
@@ -97,17 +97,24 @@ function parseReply(raw: string): ChatResponse {
     const hasCoords =
       place && typeof place.lat === "number" && typeof place.lng === "number";
 
-    return {
-      reply: parsed.reply?.trim() || raw.trim(),
-      suggestedPlace: hasCoords
-        ? {
-            id: `suggest-${Date.now()}`,
-            name: place.name ?? "提案された場所",
-            address: place.address,
-            location: { lat: place.lat as number, lng: place.lng as number },
-          }
-        : undefined,
-    };
+      return {
+          reply: parsed.reply?.trim() || raw.trim(),
+          suggestedPlace: hasCoords
+              ? {
+                  id: `suggest-${Date.now()}`,
+                  name: place.name ?? "提案された場所",
+                  // address: place.address, // ← 新しいPlace型に存在しないためコメントアウトまたは削除します
+                  location: { lat: place.lat as number, lng: place.lng as number },
+
+                  // ▽ ここから追加: 新しい Place 型を満たすためのデフォルト値 ▽
+                  isFavorite: false,
+                  isWishlist: false,
+                  visitCount: 0,
+                  lastVisitedAt: null,
+                  createdAt: new Date().toISOString(),
+              } as Place // ChatResponse側の厳密な型チェックエラーを確実に回避するための一時的な対応
+              : undefined,
+      };
   } catch {
     // JSONで返ってこなかった場合は本文をそのまま読み上げる
     return { reply: raw.trim() };

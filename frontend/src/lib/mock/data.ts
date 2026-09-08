@@ -1,4 +1,4 @@
-import type { Place } from "@/types/api";
+import { Place } from '@/types/database';
 
 /** デモ用の固定ユーザーID。認証を作るまではこれを使う */
 export const MOCK_USER_ID = "demo-user";
