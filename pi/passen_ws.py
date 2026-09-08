@@ -31,8 +31,13 @@ SAMPLE_RATE = 16000
 FRAME = 1280              # 80ms。openWakeWord の想定に合わせている
 THRESHOLD = 0.35          # ウェイクワードの判定。誤検出が増えたら上げる
 
-# 発話の終わりの判定。車内は暗騒音があるので RMS はやや高めに取る
-SILENCE_RMS = 400
+# 発話の終わりの判定。
+# 固定値では場所が変わると合わない（実測: 室内の暗騒音の底が 265〜510 あり、
+# 当初の 400 では一度も無音と判定されなかった）。起動時に環境音を測り、
+# その倍率で基準を決める。
+SILENCE_MARGIN = 2.5      # 暗騒音の何倍を発話とみなすか
+SILENCE_RMS_MIN = 500     # 静かすぎる場所での下限
+SILENCE_RMS_MAX = 3000    # うるさすぎる場所での上限
 SILENCE_SEC = 1.2
 UTTERANCE_MAX_SEC = 10.0
 
@@ -45,21 +50,50 @@ USER_ID = os.environ.get("PASSEN_USER", "pi-demo")
 DEVICE = os.environ.get("PASSEN_DEVICE", "raspberrypi-4")
 
 
-def find_card(cmd: str, skip: str) -> str:
+def list_cards(cmd: str, skip: str) -> list[str]:
     """arecord -l / aplay -l から USB 機器の card 番号を拾う。
     Pi 内蔵の HDMI・イヤホン端子は skip で除外する。"""
     out = subprocess.run([cmd, "-l"], capture_output=True, text=True).stdout
+    found = []
     for line in out.splitlines():
         m = re.match(r"card (\d+):", line)
-        if m and not re.search(skip, line, re.I):
-            return m.group(1)
-    raise SystemExit(f"{cmd} -l で機器が見つかりません")
+        if m and not re.search(skip, line, re.I) and m.group(1) not in found:
+            found.append(m.group(1))
+    if not found:
+        raise SystemExit(f"{cmd} -l で機器が見つかりません")
+    return found
 
 
-MIC_CARD = os.environ.get("PASSEN_MIC") or find_card("arecord", r"vc4hdmi|bcm2835")
-SPK_CARD = os.environ.get("PASSEN_SPK") or find_card(
-    "aplay", r"Headphones|vc4hdmi|bcm2835"
-)
+MIC_CARD = os.environ.get("PASSEN_MIC") or list_cards("arecord", r"vc4hdmi|bcm2835")[0]
+
+# USB マイクは再生デバイスも持っていることが多く、先頭を取るとマイクを
+# スピーカーとして掴んでしまう。マイク以外を優先する。
+_spk = os.environ.get("PASSEN_SPK")
+if not _spk:
+    cards = list_cards("aplay", r"Headphones|vc4hdmi|bcm2835")
+    others = [c for c in cards if c != MIC_CARD]
+    _spk = others[0] if others else cards[0]
+SPK_CARD = _spk
+
+
+def rms(data: bytes) -> float:
+    audio = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+    return float(np.sqrt(np.mean(audio * audio)))
+
+
+def calibrate(mic, seconds: float = 1.0) -> float:
+    """その場の環境音を測り、無音とみなす基準を決める。
+    車内と室内では暗騒音が大きく違うため、固定値だと必ずどちらかで外れる。"""
+    levels = []
+    for _ in range(int(seconds * SAMPLE_RATE / FRAME)):
+        data = mic.stdout.read(FRAME * 2)
+        if not data:
+            break
+        levels.append(rms(data))
+    if not levels:
+        return SILENCE_RMS_MIN
+    floor = sorted(levels)[len(levels) // 2]   # 中央値。突発音に引きずられない
+    return min(SILENCE_RMS_MAX, max(SILENCE_RMS_MIN, floor * SILENCE_MARGIN))
 
 
 def open_mic() -> subprocess.Popen:
@@ -144,7 +178,7 @@ class Session:
             self.last_ping = time.time()
 
 
-def stream_utterance(session: Session, mic) -> None:
+def stream_utterance(session: Session, mic, silence_rms: float) -> None:
     """無音になるまでマイクの音を送り続ける。終わったら end を送る。"""
     start = time.time()
     silent_since: float | None = None
@@ -156,11 +190,9 @@ def stream_utterance(session: Session, mic) -> None:
 
         session.ws.send_binary(data)
 
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-        rms = float(np.sqrt(np.mean(audio * audio)))
         now = time.time()
 
-        if rms < SILENCE_RMS:
+        if rms(data) < silence_rms:
             if silent_since is None:
                 silent_since = now
             elif now - silent_since >= SILENCE_SEC:
@@ -214,9 +246,9 @@ def receive_audio(session: Session, fmt: dict) -> None:
         player.wait()
 
 
-def handle_turn(session: Session, mic) -> None:
+def handle_turn(session: Session, mic, silence_rms: float) -> None:
     """呼びかけ1回ぶん。送信 → 返事の受信 → 再生まで。"""
-    stream_utterance(session, mic)
+    stream_utterance(session, mic, silence_rms)
 
     while True:
         msg = session.recv_json()
@@ -265,6 +297,10 @@ def run_once(wake: WakeModel) -> None:
 
     mic = open_mic()
     try:
+        silence_rms = calibrate(mic)
+        print(f"環境音から決めた無音の基準: {silence_rms:.0f}")
+        wake.reset()
+
         while True:
             data = mic.stdout.read(FRAME * 2)
             if not data:
@@ -286,7 +322,7 @@ def run_once(wake: WakeModel) -> None:
             play_file(BEEP)
             drain(mic.stdout)   # ビープ音を発話として送らないため
 
-            handle_turn(session, mic)
+            handle_turn(session, mic, silence_rms)
 
             drain(mic.stdout)
             wake.reset()
