@@ -38,13 +38,18 @@ users/{userId}/visits/{visitId}
 
 | やりたいこと | クエリ |
 | --- | --- |
-| 1年前の今日行った場所 | `visits` を `visitedAt` の範囲(前後1日など)で検索 |
+| 1年前の今日行った場所 | `visits` を `visitedAt` の範囲(前後1日など)で検索。`web-reference/db.ts` の `getMemoriesOnThisDay()` として実装済み |
 | ある場所の訪問回数 | `places/{placeId}.visitCount` を参照 |
 | 寄り道の思い出 | `visits` を `isDetour == true` で絞り込み |
 | 行きたい場所一覧 | `places` を `isWishlist == true` で絞り込み |
 
+## 認証
+
+Firebase Authの匿名認証(`signInAnonymously`)を導入した。`users/{userId}` の `userId` は、匿名サインインで発行される `auth.currentUser.uid` をそのまま使う(端末ごとに1つ、ブラウザに保存され再訪問時も同じuidが復元される)。
+
+`firestore.rules` は `request.auth.uid == userId` ベースの本実装に切り替え、公開済み。Firebaseコンソールで匿名認証プロバイダを有効化し、自動クリーンアップはOFFにしてある(30日でアカウントが消えると一生分の思い出が迷子になるため)。詳細は[`docs/progress.md`](./progress.md)参照。
+
 ## 今後の検討事項
 
-- 認証(Firebase Auth)を導入する際、`users/{userId}` の `userId` をどう決めるか(端末ごとの匿名ID、家族アカウントなど)
-- `firestore.rules` は現在テストモード(全許可)。認証導入後に `request.auth.uid == userId` ベースのルールへ切り替える
+- 家族アカウントなど、匿名認証だけでは表現できない共有の仕組みが必要になった場合の設計
 - 写真・音声など大きいデータを扱う場合は Cloud Storage との併用を検討

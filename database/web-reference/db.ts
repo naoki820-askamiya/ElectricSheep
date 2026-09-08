@@ -9,13 +9,12 @@ import {
   query,
   where,
   orderBy,
+  getDoc,
   getDocs,
   serverTimestamp,
   Timestamp,
 } from "firebase/firestore";
-import { db } from "./firebase";
-
-const DEFAULT_USER_ID = "default_user"; // Firebase Auth導入までの仮のユーザーID
+import { db, currentUserId } from "./firebase";
 
 export type Place = {
   id: string;
@@ -41,11 +40,11 @@ export type Visit = {
   createdAt: Timestamp;
 };
 
-function placesRef(userId: string = DEFAULT_USER_ID) {
+function placesRef(userId: string) {
   return collection(db, "users", userId, "places");
 }
 
-function visitsRef(userId: string = DEFAULT_USER_ID) {
+function visitsRef(userId: string) {
   return collection(db, "users", userId, "visits");
 }
 
@@ -55,9 +54,10 @@ export async function addPlace(
   lng: number,
   isFavorite = false,
   isWishlist = false,
-  userId: string = DEFAULT_USER_ID
+  userId?: string
 ): Promise<string> {
-  const docRef = await addDoc(placesRef(userId), {
+  const uid = userId ?? (await currentUserId);
+  const docRef = await addDoc(placesRef(uid), {
     name,
     lat,
     lng,
@@ -79,10 +79,11 @@ export async function addVisit(
     isDetour?: boolean;
     notableEvent?: string;
   } = {},
-  userId: string = DEFAULT_USER_ID
+  userId?: string
 ): Promise<string> {
-  const visitDocRef = doc(visitsRef(userId));
-  const placeDocRef = doc(placesRef(userId), placeId);
+  const uid = userId ?? (await currentUserId);
+  const visitDocRef = doc(visitsRef(uid));
+  const placeDocRef = doc(placesRef(uid), placeId);
 
   await runTransaction(db, async (transaction) => {
     const placeSnapshot = await transaction.get(placeDocRef);
@@ -107,24 +108,68 @@ export async function addVisit(
   return visitDocRef.id;
 }
 
-export async function getWishlist(userId: string = DEFAULT_USER_ID): Promise<Place[]> {
-  const snapshot = await getDocs(query(placesRef(userId), where("isWishlist", "==", true)));
+export async function getWishlist(userId?: string): Promise<Place[]> {
+  const uid = userId ?? (await currentUserId);
+  const snapshot = await getDocs(query(placesRef(uid), where("isWishlist", "==", true)));
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Place));
 }
 
-export async function getFavorites(userId: string = DEFAULT_USER_ID): Promise<Place[]> {
-  const snapshot = await getDocs(query(placesRef(userId), where("isFavorite", "==", true)));
+export async function getFavorites(userId?: string): Promise<Place[]> {
+  const uid = userId ?? (await currentUserId);
+  const snapshot = await getDocs(query(placesRef(uid), where("isFavorite", "==", true)));
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Place));
 }
 
 export async function getVisitsForPlace(
   placeId: string,
-  userId: string = DEFAULT_USER_ID
+  userId?: string
 ): Promise<Visit[]> {
+  const uid = userId ?? (await currentUserId);
   const snapshot = await getDocs(
-    query(visitsRef(userId), where("placeId", "==", placeId), orderBy("visitedAt"))
+    query(visitsRef(uid), where("placeId", "==", placeId), orderBy("visitedAt"))
   );
   return snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Visit));
+}
+
+export type VisitWithPlace = Visit & { place: Place | null };
+
+// 「N年前の今日」の訪問記録を、場所情報付きで取得する。
+// タイムゾーンの誤差や「ちょうど当日」に限らず前後で会話が起きうることを考慮し、
+// 対象日の前後windowDays日を範囲に含める。
+export async function getMemoriesOnThisDay(
+  userId?: string,
+  yearsAgo = 1,
+  windowDays = 1
+): Promise<VisitWithPlace[]> {
+  const uid = userId ?? (await currentUserId);
+
+  const target = new Date();
+  target.setHours(0, 0, 0, 0);
+  target.setFullYear(target.getFullYear() - yearsAgo);
+
+  const start = new Date(target);
+  start.setDate(start.getDate() - windowDays);
+
+  const end = new Date(target);
+  end.setDate(end.getDate() + windowDays + 1);
+
+  const snapshot = await getDocs(
+    query(
+      visitsRef(uid),
+      where("visitedAt", ">=", Timestamp.fromDate(start)),
+      where("visitedAt", "<", Timestamp.fromDate(end)),
+      orderBy("visitedAt")
+    )
+  );
+  const visits = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Visit));
+
+  return Promise.all(
+    visits.map(async (visit) => {
+      const placeSnap = await getDoc(doc(placesRef(uid), visit.placeId));
+      const place = placeSnap.exists() ? ({ id: placeSnap.id, ...placeSnap.data() } as Place) : null;
+      return { ...visit, place };
+    })
+  );
 }
 
 // 2点間の距離(メートル)。GPS座標同士の近さ判定に使う。
@@ -156,10 +201,11 @@ async function reverseGeocode(lat: number, lng: number): Promise<string> {
 export async function findOrCreatePlace(
   lat: number,
   lng: number,
-  userId: string = DEFAULT_USER_ID,
+  userId?: string,
   radiusMeters = 100
 ): Promise<string> {
-  const snapshot = await getDocs(placesRef(userId));
+  const uid = userId ?? (await currentUserId);
+  const snapshot = await getDocs(placesRef(uid));
   for (const d of snapshot.docs) {
     const place = d.data() as Place;
     if (haversineDistanceMeters(lat, lng, place.lat, place.lng) <= radiusMeters) {
@@ -168,5 +214,5 @@ export async function findOrCreatePlace(
   }
 
   const name = await reverseGeocode(lat, lng);
-  return addPlace(name, lat, lng);
+  return addPlace(name, lat, lng, false, false, uid);
 }
