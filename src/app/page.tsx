@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiMode, apiModeLabel, postChat } from "@/lib/api";
-import { MOCK_USER_ID } from "@/lib/mock/data";
+import { DEFAULT_USER_ID } from "@/database/db";
 import { useGeolocation } from "@/hooks/useGeolocation";
 import { useVoiceAgent, type VoicePhase } from "@/hooks/useVoiceAgent";
-import type { Message, Place } from "@/types/api";
+import type { Message, SuggestedPlace } from "@/types/api";
 
 /** 各状態の見せ方。運転中に一目で分かることを優先する */
 const PHASE_LABEL: Record<VoicePhase, string> = {
@@ -39,7 +39,7 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [suggested, setSuggested] = useState<Place | null>(null);
+  const [suggested, setSuggested] = useState<SuggestedPlace | null>(null);
 
   const { location } = useGeolocation();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -79,7 +79,7 @@ export default function ChatPage() {
 
       try {
         const res = await postChat({
-          userId: MOCK_USER_ID,
+          userId: DEFAULT_USER_ID,
           message: trimmed,
           currentLocation: location ?? undefined,
           // 長くなりすぎないよう直近の数往復だけ送る

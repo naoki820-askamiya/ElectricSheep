@@ -1,10 +1,10 @@
 # 車載デバイス ⇄ サーバー WebSocket 仕様
 
 Raspberry Pi（車載デバイス）とサーバーの間の取り決めです。
-`frontend/src/types/api.ts` と同じく、**ここがチームのつなぎ目**になります。
+`src/types/api.ts` と同じく、**ここがチームのつなぎ目**になります。
 変更するときは必ずフロント（ゆうすけ）・バックエンド（よしたか）・LLM（なおき）に共有してください。
 
-対応する型定義: `frontend/src/types/ws.ts`
+対応する型定義: `src/types/ws.ts`
 Pi 側の実装: `pi/passen_ws.py`
 
 ---
@@ -143,7 +143,7 @@ Pi の画面（ログ）に出して、認識のズレを目で追えるよう�
 
 ### `reply`
 
-AI の返事。`frontend/src/types/api.ts` の `ChatResponse` と同じ形です。
+AI の返事。`src/types/api.ts` の `ChatResponse` と同じ形です。
 
 ```json
 {

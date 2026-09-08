@@ -1,6 +1,6 @@
 # 進捗状況(データベース担当)
 
-最終更新: 2026-08-22
+最終更新: 2026-09-08
 
 ## 全体の役割分担
 
@@ -21,7 +21,7 @@ Raspberry Piでの実装コストが高いため、以下の役割分担に変�
 ## クラウド側(Firebase / Firestore)
 
 - Firebaseプロジェクト「hakkason-database」を作成(Firestore, Standardエディション, defaultデータベース, テストモード)
-- Webアプリ「ElectricSheep_bag」を登録し、`firebaseConfig` を取得済み(`web-reference/firebase.ts` に反映済み)
+- Webアプリ「ElectricSheep_bag」を登録し、`firebaseConfig` を取得済み(`../firebase.ts` に反映済み)
 - `cloud/` フォルダに `firebase init firestore` でFirebase設定を配置
   - `firebase.json` / `.firebaserc` / `firestore.rules` / `firestore.indexes.json`
 - 複合インデックスを1つデプロイ済み(`visits` コレクションを `placeId` + `visitedAt` で検索するため)
@@ -48,9 +48,7 @@ users/{userId}
 - `test_connection.py` — 接続確認用スクリプト(実行済み、成功)
 - `test_schema.py` — スキーマ通りにデータが書き込めるか確認するスクリプト(実行済み、成功)
 
-### `web-reference/`(TypeScript・Next.js向け本命コード)
-
-Next.jsプロジェクトができ次第、`src/lib/` などにコピーして使う想定。
+### `src/database/`（TypeScript・Next.js本体へ統合済み）
 
 - `firebase.ts` — Firebase Web SDKの初期化。オフラインキャッシュ(`persistentLocalCache`)を有効化済み。これが端末側ローカルDBの役割を担う
 - `db.ts` — データ操作関数
@@ -67,6 +65,5 @@ Next.jsプロジェクトができ次第、`src/lib/` などにコピーして�
 1. **認証(Firebase Auth)** — 現在は `DEFAULT_USER_ID` という仮のIDで全データを1人分として扱っている。匿名認証の導入を検討中
 2. **セキュリティルールの本実装** — テストモードのままなので、認証導入後に「自分のデータしか読み書きできない」ルールへ切り替える必要がある
 3. **「1年前の今日」のような想起クエリ** — まだ関数として実装していない
-4. **Next.jsプロジェクトへの統合** — プロジェクト自体がまだ存在しないため未着手。できたら `web-reference/` の中身をコピーする
-5. **会話要約・気分データの書き込み元の調整** — Gemini連携(なおき担当)からどう `addVisit()` を呼ぶかの繋ぎ込み
-6. **Raspberry Pi→スマホのデータ連携方法** — Bluetoothなどでの連携方法は未設計
+4. **会話要約・気分データの書き込み元の調整** — Gemini連携(なおき担当)からどう `addVisit()` を呼ぶかの繋ぎ込み
+5. **Raspberry Pi→スマホのデータ連携方法** — WebSocket仕様は追加済みだが、位置情報の連携は未設計

@@ -9,7 +9,7 @@
  * 「終わった」といった合図だけを運びます。
  */
 
-import type { LatLng, Place } from "./api";
+import type { LatLng, SuggestedPlace } from "./api";
 
 /** 音声の形式。ヘッダ無しの生データなので、別途こうして伝える必要がある */
 export type AudioFormat = {
@@ -78,7 +78,7 @@ export type ReplyMessage = {
   type: "reply";
   text: string;
   /** 行き先を提案したときだけ入る */
-  suggestedPlace?: Place | null;
+  suggestedPlace?: SuggestedPlace | null;
 };
 
 /** これから読み上げ音声を流す */

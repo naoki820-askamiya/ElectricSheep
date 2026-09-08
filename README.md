@@ -117,3 +117,16 @@ flowchart LR
 黒川義高
 鈴木悠介
 大村悠月
+
+## 開発環境
+
+Next.jsアプリはリポジトリ直下にあります。
+
+```bash
+npm install
+cp .env.local.example .env.local
+npm run dev
+```
+
+Firebase Cloud Firestoreの実装とスキーマは `src/database/`、Raspberry Pi側の実装は
+`pi/`、Piとサーバー間のWebSocket仕様は `docs/websocket-protocol.md` にあります。
