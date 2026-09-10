@@ -4,15 +4,20 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "backend": "node server/index.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:backend": "node --test server/**/*.test.mjs"
   },
   "dependencies": {
+    "@google/genai": "^2.21.0",
     "firebase": "^12.18.0",
+    "firebase-admin": "^13.6.0",
     "next": "16.3.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
