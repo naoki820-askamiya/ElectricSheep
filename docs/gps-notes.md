@@ -189,24 +189,25 @@ Climb  5.76 m/min
 
 ## 通信仕様との対応
 
-現在の [websocket-protocol.md](websocket-protocol.md) には、Pi が自発的に送る `location` だけが定義されています。仕様書の方式（要求されたときだけ返す）に合わせるには、**2つの変更**が要ります。
+現在の [websocket-protocol.md](websocket-protocol.md) は、サーバーから要求されたときだけ
+Piが位置情報を返す方式に統一されています。
 
-**1. `location_request` を追加（サーバー → Pi）**
+**1. `location_request`（サーバー → Pi）**
 
 ```json
 { "type": "location_request", "requestId": "abc123" }
 ```
 
-**2. `location` を応答形式に変更（Pi → サーバー）**
+**2. `location_result`（Pi → サーバー、測位成功）**
 
 ```json
 {
-  "type": "location",
+  "type": "location_result",
   "requestId": "abc123",
   "lat": 35.07040,
   "lng": 137.23241,
   "accuracy": 12.4,
-  "fixedAt": "2026-09-09T10:07:57Z"
+  "measuredAt": "2026-09-09T10:07:57Z"
 }
 ```
 
@@ -214,15 +215,19 @@ Climb  5.76 m/min
 
 **測位できていないときも必ず返してください。** 無応答だとサーバーがタイムアウトを待つことになります。
 
+**3. `location_error`（Pi → サーバー、測位失敗）**
+
 ```json
 {
-  "type": "location",
+  "type": "location_error",
   "requestId": "abc123",
-  "error": { "code": "NO_FIX", "message": "測位できていません" }
+  "code": "NO_FIX",
+  "message": "測位できていません"
 }
 ```
 
-想定するエラー: `NO_FIX`（衛星不足）/ `NO_DEVICE`（GPS未接続）/ `STALE`（キャッシュが古い）
+想定するエラー: `NOT_IMPLEMENTED`（GPS連携前）/ `NO_FIX`（衛星不足）/
+`NO_DEVICE`（GPS未接続）/ `STALE`（キャッシュが古い）/ `INTERNAL`（その他）
 
 ---
 

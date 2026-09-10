@@ -176,7 +176,8 @@ export class GeminiLiveConversation {
       if (!response) {
         try {
           const result = await this.toolController.execute(call.name, call.args ?? {});
-          if (result.closeConversation) this.closeAfterTurn = true;+          response = { output: result };
+          if (result.closeConversation) this.closeAfterTurn = true;
+          response = { output: result };
         } catch (error) {
           response = {
             error: {

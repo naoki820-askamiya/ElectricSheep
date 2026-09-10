@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:backend": "node --test server/**/*.test.mjs"
+    "test:backend": "node --test server/**/*.test.mjs",
+    "test:pi": "python3 -m py_compile pi/passen_ws.py pi/wake_oww.py pi/passen_agent.py"
   },
   "dependencies": {
     "@google/genai": "^2.21.0",

@@ -40,8 +40,10 @@ Pi は起動時に1本つなぎ、**そのまま繋ぎっぱなし**にします
 | テキストフレーム | JSON の制御メッセージ。必ず `type` を持つ |
 | バイナリフレーム | 音声データそのもの。ヘッダは付けない |
 
-バイナリの解釈は、**直前のテキストメッセージが決めます。**
-`wake` の後なら「ユーザーの声」、`audio_start` の後なら「返事の音声」です。
+バイナリの解釈は、テキストメッセージで開始した**現在の音声状態**が決めます。
+`wake` または `speech_start` から `end` までは「ユーザーの声」、
+`audio_start` から `audio_end` までは「返事の音声」です。音声中に
+`transcript`、`reply`、`location_request` が挟まっても音声状態は変わりません。
 
 ---
 
@@ -87,10 +89,20 @@ PCM signed 16-bit little-endian / 16000 Hz / モノラル / ヘッダ無し
 
 ### `wake`
 
-ウェイクワードを検出した合図です。**この直後からバイナリが流れ始めます。**
+待ち受け中にウェイクワードを検出した合図です。新しいGemini Live会話を開始し、
+**この直後からバイナリが流れ始めます。** 同じ会話の2回目以降には使いません。
 
 ```json
 { "type": "wake", "score": 0.87, "at": "2026-09-08T12:34:56.789Z" }
+```
+
+### `speech_start`
+
+サーバーから `listen` を受けた後、Piが次の発話を検出した合図です。
+同じGemini Live会話を継続し、この直後からバイナリを送ります。
+
+```json
+{ "type": "speech_start" }
 ```
 
 ### （バイナリフレーム）
@@ -115,18 +127,41 @@ PCM signed 16-bit little-endian / 16000 Hz / モノラル / ヘッダ無し
 人は呼びかけたあと少し考えるので、両方を同じ長さにすると
 「えーと」の間に打ち切られ、本題が一切録れません（実測で発生しました）。
 
-`no_speech` のときは**音声認識も LLM も呼ぶ必要がありません。**
-無駄な課金と待ち時間を避けられるので、サーバー側で分岐してください。
+`no_speech` のときはサーバーがGeminiへ `activityEnd` を送らず、会話を閉じます。
+Piには `conversation_ended` が返ります。
 
 それ以外を受け取ったら、**溜めた音声を処理して返事を返してください。**
 
-### `location`
+### `location_result`
 
-スマートフォンから位置情報が取れている場合のみ。任意です。
+`location_request` に対する測位成功応答です。`requestId` は要求と同じ値を返します。
 
 ```json
-{ "type": "location", "lat": 35.1721, "lng": 136.9086 }
+{
+  "type": "location_result",
+  "requestId": "abc123",
+  "lat": 35.1721,
+  "lng": 136.9086,
+  "accuracy": 12.4,
+  "measuredAt": "2026-09-10T03:34:56.789Z"
+}
 ```
+
+### `location_error`
+
+測位できない場合も、サーバーをタイムアウトまで待たせず必ず返します。
+
+```json
+{
+  "type": "location_error",
+  "requestId": "abc123",
+  "code": "NOT_IMPLEMENTED",
+  "message": "位置情報機能は準備中のため、現在地を取得できません"
+}
+```
+
+`code` は `NOT_IMPLEMENTED` / `NO_FIX` / `NO_DEVICE` / `STALE` / `INTERNAL`。
+GPS担当の実装が完成するまでは `NOT_IMPLEMENTED` を返します。
 
 ### `ping`
 
@@ -173,7 +208,8 @@ AI の返事。`src/types/api.ts` の `ChatResponse` と同じ形です。
 
 ### `audio_start` →（バイナリ）→ `audio_end`
 
-読み上げ音声です。`reply` の直後に送ってください。
+読み上げ音声です。低遅延で再生を始めるため、`reply` より先に `audio_start` と
+バイナリが届く場合があります。Piは音声区間中に届いた `reply` も処理します。
 
 ```json
 { "type": "audio_start", "encoding": "pcm_s16le", "sampleRate": 24000, "channels": 1 }
@@ -184,7 +220,35 @@ AI の返事。`src/types/api.ts` の `ChatResponse` と同じ形です。
 ```
 
 **`audio_end` は必ず送ってください。** Pi はこれを受け取るまで再生を終えられず、
-次の待ち受けに戻れません。
+次のメッセージへ進めません。
+
+### `location_request`
+
+Geminiの場所登録ツールが現在地を必要としたときに送ります。Piは同じ `requestId` で
+`location_result` または `location_error` を必ず返します。
+
+```json
+{ "type": "location_request", "requestId": "abc123" }
+```
+
+### `listen`
+
+返答後も同じGemini Live会話を続け、次のユーザー発話を待つ指示です。
+Piは音声を外へ送らずローカルで発話開始を待ち、検出後に `speech_start` を送ります。
+
+```json
+{ "type": "listen", "timeoutSeconds": 180 }
+```
+
+### `conversation_ended`
+
+Gemini Live会話を閉じ、ウェイクワード待ち受けへ戻る指示です。
+
+```json
+{ "type": "conversation_ended", "reason": "idle_timeout" }
+```
+
+`reason` は `user_requested` / `idle_timeout` / `no_speech` / `error`。
 
 ### `error`
 
@@ -202,7 +266,7 @@ Pi は内容をログに出し、**待ち受けに戻ります。** 接続は切
 
 ---
 
-## 1往復の流れ
+## 会話の流れ
 
 ```
 Pi                                     サーバー
@@ -213,18 +277,28 @@ Pi                                     サーバー
 
 （待ち受け。ウェイクワード検出のみ。音声は送らない）
 
-「パッセンジャー」を検出
+「パッセンジャー」を検出（初回だけ）
   ├── wake ──────────────────────────►
   ├── バイナリ（80msごと）───────────►   溜める
   ├── バイナリ ──────────────────────►
   ├── end ───────────────────────────►
                                         音声認識 → LLM → 音声合成
   ◄────────────────────── transcript ─┤
-  ◄─────────────────────────── reply ─┤
   ◄───────────────────── audio_start ─┤
   ◄──────────────────────── バイナリ ─┤   再生開始
+  ◄─────────────────────────── reply ─┤   音声区間中でも処理
   ◄───────────────────── audio_end ───┤
-再生完了 → 待ち受けに戻る
+  ◄────────────────────────── listen ─┤
+
+次の発話をローカルで検出
+  ├── speech_start ───────────────────►
+  ├── バイナリ（80msごと）───────────►
+  ├── end ───────────────────────────►
+                                      同じGemini Live会話で応答
+
+会話終了
+  ◄─────────────── conversation_ended ┤
+ウェイクワード待ち受けへ戻る
 ```
 
 ---

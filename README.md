@@ -128,5 +128,16 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
+Raspberry Pi向けのWebSocket／Gemini Liveバックエンドは、Next.jsとは別プロセスで
+起動します。`.env.local` の `GEMINI_API_KEY` を設定してください。Firestoreの資格情報を
+用意せず通信だけ試す場合は、`PASSEN_DB_MODE=memory` も設定します。
+
+```bash
+npm run backend
+```
+
+起動確認は `http://localhost:8080/healthz`、Piの接続先は
+`ws://<PCのIPアドレス>:8080/ws` です。
+
 Firebase Cloud Firestoreの実装とスキーマは `src/database/`、Raspberry Pi側の実装は
 `pi/`、Piとサーバー間のWebSocket仕様は `docs/websocket-protocol.md` にあります。

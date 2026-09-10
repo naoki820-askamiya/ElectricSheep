@@ -18,9 +18,11 @@
 import json
 import os
 import re
+import select
 import subprocess
 import tempfile
 import time
+from collections import deque
 from urllib.parse import urlencode
 
 import numpy as np
@@ -44,6 +46,7 @@ UTTERANCE_MAX_SEC = 10.0  # 話し始めてからの上限
 
 COOLDOWN_SEC = 1.0        # 再生後、待ち受けに戻るまでの間
 PING_SEC = 30.0
+FOLLOWUP_PREROLL_FRAMES = 5  # 発話検出直前の400msも送り、語頭を欠かさない
 
 WS_URL = os.environ.get("PASSEN_WS", "ws://localhost:8080/ws")
 WAKE_MODEL = os.environ.get("PASSEN_WAKE", "passenger.onnx")
@@ -178,8 +181,24 @@ class Session:
             self.send({"type": "ping"})
             self.last_ping = time.time()
 
+    def recv_json_nowait(self) -> dict | None:
+        """届いている制御メッセージがあれば1件だけ返す。音声待機は止めない。"""
+        sock = self.ws.sock
+        if sock is None:
+            raise ConnectionError("サーバーが接続を閉じました")
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return None
 
-def stream_utterance(session: Session, mic, silence_rms: float) -> None:
+        opcode, data = self.ws.recv_data()
+        if opcode == websocket.ABNF.OPCODE_TEXT:
+            return json.loads(data.decode())
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            raise ConnectionError("サーバーが接続を閉じました")
+        return None
+
+
+def stream_utterance(session: Session, mic, silence_rms: float) -> str:
     """発話が終わるまでマイクの音を送り続ける。終わったら end を送る。
 
     ■「話し始めるまで」と「話し終わってから」を分けている理由
@@ -211,20 +230,100 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> None:
                 silent_since = now
             elif now - silent_since >= SILENCE_SEC:
                 session.send({"type": "end", "reason": "silence"})
-                return
+                return "silence"
 
         if speech_start is None:
             if now - start >= SPEECH_START_SEC:
                 # 呼びかけただけで何も話さなかった場合。
                 # サーバーは音声認識もLLMも呼ばずに済む
                 session.send({"type": "end", "reason": "no_speech"})
-                return
+                return "no_speech"
         elif now - speech_start >= UTTERANCE_MAX_SEC:
             session.send({"type": "end", "reason": "timeout"})
-            return
+            return "timeout"
 
 
-def receive_audio(session: Session, fmt: dict) -> None:
+def stream_started_utterance(
+    session: Session,
+    mic,
+    silence_rms: float,
+    initial_frames: list[bytes],
+) -> str:
+    """ローカルで発話を検出した後の音声を、語頭のプリロール付きで送る。"""
+    session.send({"type": "speech_start"})
+    for data in initial_frames:
+        session.ws.send_binary(data)
+
+    speech_start = time.time()
+    silent_since: float | None = None
+    while True:
+        data = mic.stdout.read(FRAME * 2)
+        if not data:
+            raise ConnectionError("マイクが停止しました")
+        session.ws.send_binary(data)
+
+        now = time.time()
+        if rms(data) >= silence_rms:
+            silent_since = None
+        elif silent_since is None:
+            silent_since = now
+        elif now - silent_since >= SILENCE_SEC:
+            session.send({"type": "end", "reason": "silence"})
+            return "silence"
+
+        if now - speech_start >= UTTERANCE_MAX_SEC:
+            session.send({"type": "end", "reason": "timeout"})
+            return "timeout"
+
+
+def reject_location_request(session: Session, message: dict) -> None:
+    """GPS担当の実装が入るまで、要求をタイムアウトさせず明示的に失敗させる。"""
+    request_id = message.get("requestId")
+    if not isinstance(request_id, str) or not request_id:
+        print("  [位置情報要求にrequestIdがありません]")
+        return
+    session.send({
+        "type": "location_error",
+        "requestId": request_id,
+        "code": "NOT_IMPLEMENTED",
+        "message": "位置情報機能は準備中のため、現在地を取得できません",
+    })
+    print("  [位置情報は準備中のため、取得失敗をサーバーへ返しました]")
+
+
+def handle_server_message(session: Session, message: dict) -> str | None:
+    """音声区間の内外を問わず届く制御メッセージを処理する。"""
+    kind = message.get("type")
+    if kind == "transcript":
+        mark = "" if message.get("final") else "…"
+        print(f"  あなた: {message.get('text', '')}{mark}")
+    elif kind == "reply":
+        print(f"  パッセン: {message.get('text', '')}")
+        place = message.get("suggestedPlace")
+        if place:
+            print(f"  （提案: {place.get('name')}）")
+    elif kind == "location_request":
+        reject_location_request(session, message)
+    elif kind == "listen":
+        return "listen"
+    elif kind == "conversation_ended":
+        print(f"  [会話終了: {message.get('reason', 'unknown')}]")
+        return "conversation_ended"
+    elif kind == "error":
+        print(f"  [エラー {message.get('code')}] {message.get('message')}")
+        return "error"
+    elif kind == "audio_start":
+        return "audio_start"
+    elif kind == "audio_end":
+        return "audio_end"
+    elif kind == "pong":
+        return None
+    else:
+        print(f"  [未知のメッセージ: {kind}]")
+    return None
+
+
+def receive_audio(session: Session, fmt: dict) -> str:
     """audio_start を受けた後の音声を鳴らす。audio_end まで読み続ける。"""
     encoding = fmt.get("encoding", "pcm_s16le")
 
@@ -235,7 +334,10 @@ def receive_audio(session: Session, fmt: dict) -> None:
             if opcode == websocket.ABNF.OPCODE_BINARY:
                 chunks.append(data)
             elif opcode == websocket.ABNF.OPCODE_TEXT:
-                if json.loads(data.decode()).get("type") == "audio_end":
+                action = handle_server_message(session, json.loads(data.decode()))
+                if action in {"audio_end", "conversation_ended", "error"}:
+                    if action != "audio_end":
+                        return action
                     break
             elif opcode == websocket.ABNF.OPCODE_CLOSE:
                 raise ConnectionError("再生中に接続が切れました")
@@ -244,7 +346,7 @@ def receive_audio(session: Session, fmt: dict) -> None:
         with open(path, "wb") as f:
             f.write(b"".join(chunks))
         play_file(path)
-        return
+        return "audio_end"
 
     player = open_raw_player(fmt.get("sampleRate", 24000), fmt.get("channels", 1))
     try:
@@ -253,8 +355,9 @@ def receive_audio(session: Session, fmt: dict) -> None:
             if opcode == websocket.ABNF.OPCODE_BINARY:
                 player.stdin.write(data)
             elif opcode == websocket.ABNF.OPCODE_TEXT:
-                if json.loads(data.decode()).get("type") == "audio_end":
-                    break
+                action = handle_server_message(session, json.loads(data.decode()))
+                if action in {"audio_end", "conversation_ended", "error"}:
+                    return action
             elif opcode == websocket.ABNF.OPCODE_CLOSE:
                 raise ConnectionError("再生中に接続が切れました")
     finally:
@@ -264,32 +367,77 @@ def receive_audio(session: Session, fmt: dict) -> None:
         player.wait()
 
 
-def handle_turn(session: Session, mic, silence_rms: float) -> None:
-    """呼びかけ1回ぶん。送信 → 返事の受信 → 再生まで。"""
+def receive_model_turn(session: Session) -> tuple[str, dict]:
+    """Geminiの返答を処理し、次の発話待ちか会話終了まで読む。"""
+    while True:
+        message = session.recv_json()
+        action = handle_server_message(session, message)
+        if action == "audio_start":
+            action = receive_audio(session, message)
+        if action == "listen":
+            return action, message
+        if action in {"conversation_ended", "error"}:
+            return action, message
+
+
+def wait_for_followup(
+    session: Session,
+    mic,
+    silence_rms: float,
+    timeout_seconds: float,
+) -> str:
+    """音声を外へ出さずに次の発話を待ち、検出後だけ同じ会話へ送る。"""
+    timeout_seconds = max(1.0, min(timeout_seconds, 3600.0))
+    # サーバーのアイドルタイマーより先に no_speech を届けるため、少し手前で切る。
+    local_timeout = max(0.5, timeout_seconds - 0.25)
+    started_at = time.monotonic()
+    pre_roll: deque[bytes] = deque(maxlen=FOLLOWUP_PREROLL_FRAMES)
+    print("  続けてどうぞ")
+
+    while time.monotonic() - started_at < local_timeout:
+        while True:
+            message = session.recv_json_nowait()
+            if message is None:
+                break
+            action = handle_server_message(session, message)
+            if action in {"conversation_ended", "error"}:
+                return action
+
+        data = mic.stdout.read(FRAME * 2)
+        if not data:
+            raise ConnectionError("マイクが停止しました")
+        pre_roll.append(data)
+        if rms(data) >= silence_rms:
+            return stream_started_utterance(
+                session,
+                mic,
+                silence_rms,
+                list(pre_roll),
+            )
+        session.maybe_ping()
+
+    session.send({"type": "end", "reason": "no_speech"})
+    return "no_speech"
+
+
+def handle_conversation(session: Session, mic, silence_rms: float) -> None:
+    """初回発話から、複数ターンの会話が終了するまでを処理する。"""
     stream_utterance(session, mic, silence_rms)
 
     while True:
-        msg = session.recv_json()
-        kind = msg.get("type")
+        action, message = receive_model_turn(session)
+        if action != "listen":
+            return
 
-        if kind == "transcript":
-            mark = "" if msg.get("final") else "…"
-            print(f"  あなた: {msg.get('text', '')}{mark}")
-        elif kind == "reply":
-            print(f"  パッセン: {msg.get('text', '')}")
-            place = msg.get("suggestedPlace")
-            if place:
-                print(f"  （提案: {place.get('name')}）")
-        elif kind == "audio_start":
-            receive_audio(session, msg)
+        drain(mic.stdout)
+        time.sleep(COOLDOWN_SEC)
+        drain(mic.stdout)
+        timeout = message.get("timeoutSeconds", SPEECH_START_SEC)
+        if not isinstance(timeout, (int, float)):
+            timeout = SPEECH_START_SEC
+        outcome = wait_for_followup(session, mic, silence_rms, float(timeout))
+        if outcome in {"conversation_ended", "error"}:
             return
-        elif kind == "error":
-            print(f"  [エラー {msg.get('code')}] {msg.get('message')}")
-            return
-        elif kind == "pong":
-            continue
-        else:
-            print(f"  [未知のメッセージ: {kind}]")
 
 
 def run_once(wake: WakeModel) -> None:
@@ -327,6 +475,12 @@ def run_once(wake: WakeModel) -> None:
             scores = wake.predict(np.frombuffer(data, dtype=np.int16))
             score = max(scores.values())
 
+            while True:
+                message = session.recv_json_nowait()
+                if message is None:
+                    break
+                handle_server_message(session, message)
+
             if score <= THRESHOLD:
                 session.maybe_ping()
                 continue
@@ -340,7 +494,7 @@ def run_once(wake: WakeModel) -> None:
             play_file(BEEP)
             drain(mic.stdout)   # ビープ音を発話として送らないため
 
-            handle_turn(session, mic, silence_rms)
+            handle_conversation(session, mic, silence_rms)
 
             drain(mic.stdout)
             wake.reset()

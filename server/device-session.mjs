@@ -22,11 +22,19 @@ function validUserId(value) {
 }
 
 export class DeviceSession {
-  constructor({ socket, requestUserId, config, drafts, placeRepository }) {
+  constructor({
+    socket,
+    requestUserId,
+    config,
+    drafts,
+    placeRepository,
+    conversationFactory = (options) => new GeminiLiveConversation(options),
+  }) {
     this.socket = socket;
     this.config = config;
     this.drafts = drafts;
     this.placeRepository = placeRepository;
+    this.conversationFactory = conversationFactory;
     this.deviceSessionId = randomUUID();
     this.requestUserId = requestUserId;
     this.userId = null;
@@ -83,7 +91,7 @@ export class DeviceSession {
         await this.startUserTurn(false);
         break;
       case "end":
-        this.endUserTurn();
+        this.endUserTurn(message.reason);
         break;
       default:
         throw new Error(`未対応のメッセージです: ${message.type}`);
@@ -118,8 +126,15 @@ export class DeviceSession {
     this.conversation.startUserTurn();
   }
 
-  endUserTurn() {
+  endUserTurn(reason) {
     if (!this.conversation) throw new Error("会話が開始されていません");
+    if (reason === "no_speech") {
+      this.endConversation("no_speech");
+      return;
+    }
+    if (!new Set(["silence", "timeout"]).has(reason)) {
+      throw new Error("end.reason が不正です");
+    }
     this.pauseIdleTimer();
     this.state = "model_responding";
     this.conversation.endUserTurn();
@@ -135,7 +150,7 @@ export class DeviceSession {
       placeRepository: this.placeRepository,
       nearbyRadiusMeters: this.config.nearbyRadiusMeters,
     });
-    const conversation = new GeminiLiveConversation({
+    const conversation = this.conversationFactory({
       apiKey: this.config.geminiApiKey,
       model: this.config.geminiModel,
       voice: this.config.geminiVoice,

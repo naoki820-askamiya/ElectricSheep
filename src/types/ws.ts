@@ -40,6 +40,9 @@ export type WakeMessage = {
   at: string;
 };
 
+/** listen を受けた後、次の発話を検出した合図。この直後から音声を送る */
+export type SpeechStartMessage = { type: "speech_start" };
+
 /** 発話が終わった。サーバーはここで溜めた音声の処理を始める */
 export type EndMessage = {
   type: "end";
@@ -51,16 +54,39 @@ export type EndMessage = {
   reason: "silence" | "no_speech" | "timeout";
 };
 
-/** スマートフォンから位置が取れているときだけ。任意 */
-export type LocationMessage = { type: "location" } & LatLng;
+/** location_request に対する測位成功応答 */
+export type LocationResultMessage = {
+  type: "location_result";
+  requestId: string;
+  accuracy?: number;
+  /** ISO8601。GPSがこの座標を測定した時刻 */
+  measuredAt?: string;
+} & LatLng;
+
+export type LocationErrorCode =
+  | "NOT_IMPLEMENTED"
+  | "NO_FIX"
+  | "NO_DEVICE"
+  | "STALE"
+  | "INTERNAL";
+
+/** location_request に対する測位失敗応答。失敗時も必ず返す */
+export type LocationErrorMessage = {
+  type: "location_error";
+  requestId: string;
+  code: LocationErrorCode;
+  message: string;
+};
 
 export type PingMessage = { type: "ping" };
 
 export type DeviceMessage =
   | HelloMessage
   | WakeMessage
+  | SpeechStartMessage
   | EndMessage
-  | LocationMessage
+  | LocationResultMessage
+  | LocationErrorMessage
   | PingMessage;
 
 /* ------------------------------------------------------------------ */
@@ -91,6 +117,23 @@ export type AudioStartMessage = { type: "audio_start" } & AudioFormat;
 /** 読み上げ終わり。これが来ないと Pi は待ち受けに戻れない */
 export type AudioEndMessage = { type: "audio_end" };
 
+/** Geminiのツールが現在地を必要とした。Piは成功・失敗のどちらかを必ず返す */
+export type LocationRequestMessage = {
+  type: "location_request";
+  requestId: string;
+};
+
+/** 返答後も同じGemini Liveセッションで次の発話を待つ */
+export type ListenMessage = {
+  type: "listen";
+  timeoutSeconds: number;
+};
+
+export type ConversationEndedMessage = {
+  type: "conversation_ended";
+  reason: "user_requested" | "idle_timeout" | "no_speech" | "error";
+};
+
 export type ErrorMessage = {
   type: "error";
   code: string;
@@ -105,6 +148,9 @@ export type ServerMessage =
   | ReplyMessage
   | AudioStartMessage
   | AudioEndMessage
+  | LocationRequestMessage
+  | ListenMessage
+  | ConversationEndedMessage
   | ErrorMessage
   | PongMessage;
 
