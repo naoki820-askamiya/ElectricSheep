@@ -40,6 +40,9 @@ export type WakeMessage = {
   at: string;
 };
 
+/** listen を受けた後、次の発話を検出した合図。この直後から音声を送る */
+export type SpeechStartMessage = { type: "speech_start" };
+
 /** 発話が終わった。サーバーはここで溜めた音声の処理を始める */
 export type EndMessage = {
   type: "end";
@@ -59,18 +62,35 @@ export type LocationResultMessage = {
   type: "location_result";
   /** 要求されたものをそのまま返す。応答の取り違えを防ぐため */
   requestId: string;
-  /** 水平誤差の推定値（メートル）。NMEAのHDOPから概算している */
+  /**
+   * 水平誤差の推定値（メートル）。
+   * NMEA は誤差を持たないので HDOP から概算している。
+   * 実測では HDOP 1.13 のとき ±12m だった。
+   */
   accuracy?: number;
-  /** 測位した時刻。ISO8601 */
+  /** ISO8601。GPSがこの座標を測定した時刻 */
   measuredAt?: string;
 } & LatLng;
 
-/** location_request への応答（測位できなかったとき）。必ずどちらかを返す */
+/**
+ * NO_DEVICE       … GPS未接続、ポートを開けない、GPS無効で起動
+ * NO_FIX          … 衛星が足りず測位できていない（屋内では普通に起きる）
+ * STALE           … 測位したが古すぎる（トンネル直後など）
+ * INTERNAL        … 想定外の失敗
+ * NOT_IMPLEMENTED … GPS実装前の暫定コード。現在は送られない
+ */
+export type LocationErrorCode =
+  | "NO_DEVICE"
+  | "NO_FIX"
+  | "STALE"
+  | "INTERNAL"
+  | "NOT_IMPLEMENTED";
+
+/** location_request に対する測位失敗応答。失敗時も必ず返す */
 export type LocationErrorMessage = {
   type: "location_error";
   requestId: string;
-  /** NO_DEVICE … GPS未接続 / NO_FIX … 衛星不足（屋内では普通） / STALE … 古すぎる */
-  code: "NO_DEVICE" | "NO_FIX" | "STALE";
+  code: LocationErrorCode;
   message: string;
 };
 
@@ -79,6 +99,7 @@ export type PingMessage = { type: "ping" };
 export type DeviceMessage =
   | HelloMessage
   | WakeMessage
+  | SpeechStartMessage
   | EndMessage
   | LocationResultMessage
   | LocationErrorMessage
@@ -112,6 +133,23 @@ export type AudioStartMessage = { type: "audio_start" } & AudioFormat;
 /** 読み上げ終わり。これが来ないと Pi は待ち受けに戻れない */
 export type AudioEndMessage = { type: "audio_end" };
 
+/** Geminiのツールが現在地を必要とした。Piは成功・失敗のどちらかを必ず返す */
+export type LocationRequestMessage = {
+  type: "location_request";
+  requestId: string;
+};
+
+/** 返答後も同じGemini Liveセッションで次の発話を待つ */
+export type ListenMessage = {
+  type: "listen";
+  timeoutSeconds: number;
+};
+
+export type ConversationEndedMessage = {
+  type: "conversation_ended";
+  reason: "user_requested" | "idle_timeout" | "no_speech" | "error";
+};
+
 export type ErrorMessage = {
   type: "error";
   code: string;
@@ -120,21 +158,17 @@ export type ErrorMessage = {
 
 export type PongMessage = { type: "pong" };
 
-/** 現在地が必要になったときに送る。Pi は location_result / location_error を返す */
-export type LocationRequestMessage = {
-  type: "location_request";
-  requestId: string;
-};
-
 export type ServerMessage =
   | ReadyMessage
   | TranscriptMessage
   | ReplyMessage
   | AudioStartMessage
   | AudioEndMessage
+  | LocationRequestMessage
+  | ListenMessage
+  | ConversationEndedMessage
   | ErrorMessage
-  | PongMessage
-  | LocationRequestMessage;
+  | PongMessage;
 
 /* ------------------------------------------------------------------ */
 /* 取り決めの値                                                         */
