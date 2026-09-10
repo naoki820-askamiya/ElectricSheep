@@ -38,8 +38,9 @@ THRESHOLD = 0.35          # ウェイクワードの判定。誤検出が増え�
 SILENCE_MARGIN = 2.5      # 暗騒音の何倍を発話とみなすか
 SILENCE_RMS_MIN = 500     # 静かすぎる場所での下限
 SILENCE_RMS_MAX = 3000    # うるさすぎる場所での上限
-SILENCE_SEC = 1.2
-UTTERANCE_MAX_SEC = 10.0
+SILENCE_SEC = 1.2         # 話し終わってから、これだけ沈黙したら終了
+SPEECH_START_SEC = 5.0    # 呼びかけてから話し始めるまでの猶予
+UTTERANCE_MAX_SEC = 10.0  # 話し始めてからの上限
 
 COOLDOWN_SEC = 1.0        # 再生後、待ち受けに戻るまでの間
 PING_SEC = 30.0
@@ -179,8 +180,15 @@ class Session:
 
 
 def stream_utterance(session: Session, mic, silence_rms: float) -> None:
-    """無音になるまでマイクの音を送り続ける。終わったら end を送る。"""
+    """発話が終わるまでマイクの音を送り続ける。終わったら end を送る。
+
+    ■「話し始めるまで」と「話し終わってから」を分けている理由
+    人は呼びかけたあと少し考える。両方を同じ 1.2 秒で測ると、
+    「えーと」の間に打ち切られ、本題が一切録れない。
+    実測でこれが起き、4回とも 1.3 秒（＝沈黙のみ）で終了していた。
+    """
     start = time.time()
+    speech_start: float | None = None   # None のうちはまだ話し始めていない
     silent_since: float | None = None
 
     while True:
@@ -191,17 +199,27 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> None:
         session.ws.send_binary(data)
 
         now = time.time()
+        loud = rms(data) >= silence_rms
 
-        if rms(data) < silence_rms:
+        if loud:
+            if speech_start is None:
+                speech_start = now
+            silent_since = None
+        elif speech_start is not None:
+            # 話し始めたあとの沈黙だけを、発話の終わりとして数える
             if silent_since is None:
                 silent_since = now
             elif now - silent_since >= SILENCE_SEC:
                 session.send({"type": "end", "reason": "silence"})
                 return
-        else:
-            silent_since = None
 
-        if now - start >= UTTERANCE_MAX_SEC:
+        if speech_start is None:
+            if now - start >= SPEECH_START_SEC:
+                # 呼びかけただけで何も話さなかった場合。
+                # サーバーは音声認識もLLMも呼ばずに済む
+                session.send({"type": "end", "reason": "no_speech"})
+                return
+        elif now - speech_start >= UTTERANCE_MAX_SEC:
             session.send({"type": "end", "reason": "timeout"})
             return
 

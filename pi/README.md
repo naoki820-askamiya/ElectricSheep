@@ -11,7 +11,7 @@
 
 | | 状態 |
 |---|---|
-| ウェイクワード検出「パッセンジャー」 | **動く**（実測 最高スコア 0.99） |
+| ウェイクワード検出「パッセンジャー」 | **動く**（日本語発音で 5/5 検出。[models/README.md](models/README.md)） |
 | マイク録音・スピーカー再生 | **動く** |
 | WebSocket でサーバーと通信 | **実装済み。スタブで検証済み** |
 | 音声認識・LLM・音声合成 | **サーバー側。未実装** |
@@ -27,15 +27,24 @@ Pi 側だけ先に確かめられるようにしてあります。
 |---|---|
 | 本体 | Raspberry Pi 4 (2GB) |
 | OS | Raspberry Pi OS **Lite** 64-bit（Debian 12 Bookworm ベース） |
-| マイク | USB接続（C-Media）→ `plughw:3,0` |
-| スピーカー | USB接続（Jieli）→ `plughw:4,0` |
+| マイク | USB接続（USB Microphone） |
+| スピーカー | USB接続（UACDemoV1.0） |
+| GPS | USB接続（VK-162 / u-blox 7）→ `/dev/ttyACM0` |
 | 画面 | **無し。** SSH で操作する |
 
 OS を Lite にしているのは、画面を使わない設計だからです。デスクトップ環境の分だけ
 メモリと起動時間が浮きます。
 
-**card 番号は挿す順で変わります。** スクリプトは `arecord -l` / `aplay -l` から
-自動で探すので、通常は指定不要です。ずれたら環境変数で上書きしてください。
+**card 番号は固定ではありません。** USB機器を増やすと入れ替わります。実際、GPSを
+足したときにマイクとスピーカーが 3↔4 で入れ替わりました。番号を覚えないでください。
+
+スクリプトは `arecord -l` / `aplay -l` から自動で探します。USBマイクは再生デバイスも
+持っていることが多いため、**スピーカー側はマイク以外を選ぶ**ようにしてあります。
+ずれたら環境変数で上書きできます。
+
+```bash
+arecord -l && aplay -l    # 今の割り当てを確認する
+```
 
 ---
 
@@ -56,11 +65,14 @@ python3 -m venv venv
 ### 動作確認
 
 ```bash
-# マイク（5秒録って再生する）
-arecord -D plughw:3,0 -d 5 -f cd /tmp/t.wav && aplay -D plughw:4,0 /tmp/t.wav
+# マイク（5秒録って再生する。card番号は arecord -l / aplay -l で確認）
+arecord -D plughw:4,0 -d 5 -f cd /tmp/t.wav && aplay -D plughw:3,0 /tmp/t.wav
 
 # ウェイクワードだけ
-./venv/bin/python wake_oww.py passenger.onnx
+./venv/bin/python wake_oww.py passenjaa.onnx
+
+# 複数のモデルを比べる（スコアが横並びで出る）
+./venv/bin/python wake_oww.py passenger.onnx passenjaa.onnx
 ```
 
 ---
@@ -116,7 +128,7 @@ PASSEN_WS=ws://<サーバー>/ws ./venv/bin/python passen_ws.py
 | | 既定 | |
 |---|---|---|
 | `PASSEN_WS` | `ws://localhost:8080/ws` | 接続先 |
-| `PASSEN_WAKE` | `passenger.onnx` | ウェイクワードのモデル |
+| `PASSEN_WAKE` | `passenger.onnx` | ウェイクワードのモデル。**日本語発音には `passenjaa.onnx` を指定** |
 | `PASSEN_USER` | `pi-demo` | ユーザーID |
 | `PASSEN_MIC` | 自動検出 | マイクの card 番号 |
 | `PASSEN_SPK` | 自動検出 | スピーカーの card 番号 |

@@ -43,8 +43,12 @@ export type WakeMessage = {
 /** 発話が終わった。サーバーはここで溜めた音声の処理を始める */
 export type EndMessage = {
   type: "end";
-  /** silence … 無音を検出 / timeout … 上限に達した */
-  reason: "silence" | "timeout";
+  /**
+   * silence   … 話し終わって沈黙した（通常の終わり方）
+   * no_speech … 呼びかけただけで何も話さなかった。認識もLLMも不要
+   * timeout   … 話し始めてから上限に達した
+   */
+  reason: "silence" | "no_speech" | "timeout";
 };
 
 /** スマートフォンから位置が取れているときだけ。任意 */
