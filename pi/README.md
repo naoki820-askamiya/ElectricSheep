@@ -86,8 +86,20 @@ arecord -D plughw:4,0 -d 5 -f cd /tmp/t.wav && aplay -D plughw:3,0 /tmp/t.wav
 `gps_reader.py` が同じポートを開けません。症状は「データが出てこない」です。
 
 ```bash
-sudo systemctl disable --now gpsd.socket gpsd.service
+sudo systemctl mask gpsd.socket gpsd.service
+sudo pkill -x gpsd
 sudo fuser -v /dev/ttyACM0     # 誰が掴んでいるか確認
+```
+
+`stop` や `disable` では足りません。**`gpsd.socket` は繋がれた瞬間に起動する**
+仕組みなので、すぐ復活します。`mask` で起動そのものを禁止してください。
+
+さらに `gpsd` は受信機へ設定コマンドを送り、**出力する NMEA 文を変えてしまいます。**
+実機では GGA と GSV が出なくなりました。u-blox は設定をバックアップ電源付きメモリに
+持つため、USBを抜き差ししても戻りません。戻すにはこれを実行します。
+
+```bash
+./venv/bin/python gps_reset.py
 ```
 
 `gps_reader.py` を実行すると1秒ごとに状態が出ます。
@@ -107,6 +119,7 @@ sudo fuser -v /dev/ttyACM0     # 誰が掴んでいるか確認
 |---|---|
 | `passen_ws.py` | **本体。** ウェイクワード → 音声送信 → 返事の再生 |
 | `gps_reader.py` | USB GPS を常時読み、最新の座標を保持する。単体実行で確認できる |
+| `gps_reset.py` | 受信機の設定を工場出荷時に戻す。`gpsd` に設定を壊されたときに使う |
 | `wake_oww.py` | ウェイクワード単体の確認。スコアを見て閾値を決めるのに使う |
 | `passen_agent.py` | WebSocket を使わない版。Pi 内で音声認識まで行う（要 Vosk モデル） |
 | `ws_stub.js` | 検証用の偽サーバー。**本番では使わない** |
