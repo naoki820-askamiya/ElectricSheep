@@ -51,8 +51,28 @@ export type EndMessage = {
   reason: "silence" | "no_speech" | "timeout";
 };
 
-/** スマートフォンから位置が取れているときだけ。任意 */
-export type LocationMessage = { type: "location" } & LatLng;
+/**
+ * location_request への応答（測位できたとき）。
+ * 要求されたときだけ送る。待ち受け中に位置を送ることはない。
+ */
+export type LocationResultMessage = {
+  type: "location_result";
+  /** 要求されたものをそのまま返す。応答の取り違えを防ぐため */
+  requestId: string;
+  /** 水平誤差の推定値（メートル）。NMEAのHDOPから概算している */
+  accuracy?: number;
+  /** 測位した時刻。ISO8601 */
+  measuredAt?: string;
+} & LatLng;
+
+/** location_request への応答（測位できなかったとき）。必ずどちらかを返す */
+export type LocationErrorMessage = {
+  type: "location_error";
+  requestId: string;
+  /** NO_DEVICE … GPS未接続 / NO_FIX … 衛星不足（屋内では普通） / STALE … 古すぎる */
+  code: "NO_DEVICE" | "NO_FIX" | "STALE";
+  message: string;
+};
 
 export type PingMessage = { type: "ping" };
 
@@ -60,7 +80,8 @@ export type DeviceMessage =
   | HelloMessage
   | WakeMessage
   | EndMessage
-  | LocationMessage
+  | LocationResultMessage
+  | LocationErrorMessage
   | PingMessage;
 
 /* ------------------------------------------------------------------ */
@@ -99,6 +120,12 @@ export type ErrorMessage = {
 
 export type PongMessage = { type: "pong" };
 
+/** 現在地が必要になったときに送る。Pi は location_result / location_error を返す */
+export type LocationRequestMessage = {
+  type: "location_request";
+  requestId: string;
+};
+
 export type ServerMessage =
   | ReadyMessage
   | TranscriptMessage
@@ -106,7 +133,8 @@ export type ServerMessage =
   | AudioStartMessage
   | AudioEndMessage
   | ErrorMessage
-  | PongMessage;
+  | PongMessage
+  | LocationRequestMessage;
 
 /* ------------------------------------------------------------------ */
 /* 取り決めの値                                                         */

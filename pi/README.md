@@ -14,6 +14,7 @@
 | ウェイクワード検出「パッセンジャー」 | **動く**（日本語発音で 5/5 検出。[models/README.md](models/README.md)） |
 | マイク録音・スピーカー再生 | **動く** |
 | WebSocket でサーバーと通信 | **実装済み。スタブで検証済み** |
+| GPS（要求されたときだけ返す） | **実装済み。実機で 3D FIX を確認** |
 | 音声認識・LLM・音声合成 | **サーバー側。未実装** |
 
 サーバーがまだ無いので、`ws_stub.js`（返事の代わりに音階を鳴らすだけの偽サーバー）で
@@ -73,7 +74,29 @@ arecord -D plughw:4,0 -d 5 -f cd /tmp/t.wav && aplay -D plughw:3,0 /tmp/t.wav
 
 # 複数のモデルを比べる（スコアが横並びで出る）
 ./venv/bin/python wake_oww.py passenger.onnx passenjaa.onnx
+
+# GPS 単体（屋外・空が見える場所で）
+./venv/bin/python gps_reader.py
 ```
+
+### GPS を使う前に gpsd を止める
+
+**これを忘れると必ず詰まります。** `gpsd` はシリアルポートを占有するため、
+`gps_reader.py` が同じポートを開けません。症状は「データが出てこない」です。
+
+```bash
+sudo systemctl disable --now gpsd.socket gpsd.service
+sudo fuser -v /dev/ttyACM0     # 誰が掴んでいるか確認
+```
+
+`gps_reader.py` を実行すると1秒ごとに状態が出ます。
+
+```
+35.07040, 137.23241  ±11m  衛星8個  0秒前
+```
+
+`未測位` のままなら屋内である可能性が高いです。実機では**窓際で26秒**かかりました。
+詳しくは [../docs/gps-notes.md](../docs/gps-notes.md)。
 
 ---
 
@@ -82,6 +105,7 @@ arecord -D plughw:4,0 -d 5 -f cd /tmp/t.wav && aplay -D plughw:3,0 /tmp/t.wav
 | | |
 |---|---|
 | `passen_ws.py` | **本体。** ウェイクワード → 音声送信 → 返事の再生 |
+| `gps_reader.py` | USB GPS を常時読み、最新の座標を保持する。単体実行で確認できる |
 | `wake_oww.py` | ウェイクワード単体の確認。スコアを見て閾値を決めるのに使う |
 | `passen_agent.py` | WebSocket を使わない版。Pi 内で音声認識まで行う（要 Vosk モデル） |
 | `ws_stub.js` | 検証用の偽サーバー。**本番では使わない** |
@@ -132,6 +156,11 @@ PASSEN_WS=ws://<サーバー>/ws ./venv/bin/python passen_ws.py
 | `PASSEN_USER` | `pi-demo` | ユーザーID |
 | `PASSEN_MIC` | 自動検出 | マイクの card 番号 |
 | `PASSEN_SPK` | 自動検出 | スピーカーの card 番号 |
+| `PASSEN_GPS` | `on` | `off` にすると GPS を使わない（GPS無しの機体でも動く） |
+| `PASSEN_GPS_PORT` | 自動検出 | GPSのシリアルポート |
+| `PASSEN_GPS_BAUD` | `9600` | シリアル通信速度 |
+| `PASSEN_GPS_MAX_AGE_SEC` | `15` | キャッシュした座標を有効とみなす秒数 |
+| `PASSEN_GPS_TIMEOUT_SEC` | `5` | 位置情報要求を受けて待機する最大秒数 |
 
 ---
 
@@ -149,8 +178,19 @@ PASSEN_WS=ws://<サーバー>/ws ./venv/bin/python passen_ws.py
 開き直すと ALSA が数百ミリ秒止まり、その間の発話が丸ごと落ちるためです。
 
 **発話の終わりは Pi が判定します。**
-音量（RMS）が閾値を下回る状態が1.2秒続いたら送信を打ち切ります。
-車内は暗騒音があるので、実車で調整が要ります（`SILENCE_RMS`）。
+「話し始めるまで」と「話し終わってから」を別々に測っています。呼びかけたあと
+5秒は沈黙してよく、話し始めてから1.2秒の沈黙で終了とみなします。
+両方を同じ長さにすると、考えている間に打ち切られて声が一切録れませんでした。
+
+無音の基準は起動時に環境音を測って決めます。固定値では場所が変わると合いません。
+
+**位置情報は要求されたときだけ送ります。**
+GPS は起動中ずっと読んでキャッシュしていますが、`location_request` を
+受けるまで外へ出しません。測位に数十秒かかるため常時読み、
+プライバシーのため常時送信はしない、という両立です。
+
+**GPS が壊れていても会話は止まりません。**
+未接続・未測位・古い座標のいずれでも `location_error` を返して続行します。
 
 ---
 
@@ -160,10 +200,12 @@ PASSEN_WS=ws://<サーバー>/ws ./venv/bin/python passen_ws.py
 
 | | 既定 | 効き方 |
 |---|---|---|
-| `THRESHOLD` | 0.35 | ウェイクワードの判定。誤検出が増えたら上げる |
-| `SILENCE_RMS` | 400 | 無音とみなす音量。車内では上げる必要があるかも |
-| `SILENCE_SEC` | 1.2 | 何秒黙ったら発話終了とみなすか |
-| `UTTERANCE_MAX_SEC` | 10.0 | 1回の発話の上限 |
+| `THRESHOLD` | 0.35 | ウェイクワードの判定。**0.4 が上限**（[理由](models/README.md)） |
+| `SILENCE_MARGIN` | 2.5 | 環境音の何倍を発話とみなすか |
+| `SILENCE_RMS_MIN` / `MAX` | 500 / 3000 | 自動調整の下限と上限 |
+| `SILENCE_SEC` | 1.2 | 話し終わってから何秒黙ったら終了とみなすか |
+| `SPEECH_START_SEC` | 5.0 | 呼びかけてから話し始めるまでの猶予 |
+| `UTTERANCE_MAX_SEC` | 10.0 | 話し始めてからの上限 |
 
 ---
 
@@ -183,4 +225,5 @@ PASSEN_WS=ws://<サーバー>/ws ./venv/bin/python passen_ws.py
 - **返事の読み上げ。** 現状は音声合成がサーバー側にも無い
 - **停止スイッチ。** 物理的にマイクを切る手段が要る（プライバシー要件）
 - **自動起動。** 今は SSH で手動起動。systemd に登録する
-- **位置情報。** README の設計ではスマートフォンが担当。Pi からは送っていない
+- **多ターン会話。** サーバーは `listen` / `speech_start` で続けて話せる設計だが、
+  Pi は毎回ウェイクワードを要求する。受け流すだけで実装していない

@@ -12,6 +12,9 @@
  *   - 発話の切れ目（無音1.2秒）で end が飛ぶか
  *   - 送られた音声がちゃんと声として録れているか（recv_*.wav を再生して確認）
  *   - 返事の音声が Pi のスピーカーから鳴るか
+ *   - location_request に Pi が答えるか（毎ターン要求して結果を表示する）
+ *
+ * 位置情報の要求を止めたいときは STUB_ASK_LOCATION=0 で起動する。
  */
 const { WebSocketServer } = require("ws");
 const fs = require("fs");
@@ -19,6 +22,11 @@ const path = require("path");
 
 const PORT = Number(process.env.PORT || 8080);
 const OUT_DIR = path.join(__dirname, "recv");
+
+// 本番では Gemini が function call を出したときだけ要求されるが、
+// スタブでは毎ターン要求して Pi 側の実装を確かめる
+const ASK_LOCATION = process.env.STUB_ASK_LOCATION !== "0";
+const LOCATION_TIMEOUT_MS = 5000;
 
 const REPLIES = [
   "海ですか。いいですね。どちらの海でしょう。",
@@ -71,10 +79,24 @@ wss.on("connection", (ws, req) => {
   const sessionId = Math.random().toString(36).slice(2, 8);
   let chunks = [];
   let capturing = false;
+  const pendingLocation = new Map();
 
   console.log(`[${sessionId}] 接続 ${req.url}`);
 
-  ws.on("message", (data, isBinary) => {
+  /** location_request を送り、返事を待つ。来なければ null */
+  function requestLocation() {
+    const requestId = Math.random().toString(36).slice(2, 10);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingLocation.delete(requestId);
+        resolve(null);
+      }, LOCATION_TIMEOUT_MS);
+      pendingLocation.set(requestId, { resolve, timer });
+      ws.send(JSON.stringify({ type: "location_request", requestId }));
+    });
+  }
+
+  ws.on("message", async (data, isBinary) => {
     if (isBinary) {
       if (capturing) chunks.push(Buffer.from(data));
       return;
@@ -85,6 +107,18 @@ wss.on("connection", (ws, req) => {
       msg = JSON.parse(data.toString());
     } catch {
       console.log(`[${sessionId}] JSON として読めません`);
+      return;
+    }
+
+    if (msg.type === "location_result" || msg.type === "location_error") {
+      const pending = pendingLocation.get(msg.requestId);
+      if (!pending) {
+        console.log(`[${sessionId}] 覚えのない requestId: ${msg.requestId}`);
+        return;
+      }
+      clearTimeout(pending.timer);
+      pendingLocation.delete(msg.requestId);
+      pending.resolve(msg);
       return;
     }
 
@@ -113,6 +147,20 @@ wss.on("connection", (ws, req) => {
       const file = path.join(OUT_DIR, `recv_${sessionId}_${Date.now()}.wav`);
       fs.writeFileSync(file, toWav(pcm));
       console.log(`[${sessionId}] end(${msg.reason}) ${seconds}秒 → ${path.basename(file)}`);
+
+      if (ASK_LOCATION) {
+        const location = await requestLocation();
+        if (!location) {
+          console.log(`[${sessionId}] location_request に応答なし（${LOCATION_TIMEOUT_MS / 1000}秒）`);
+        } else if (location.type === "location_error") {
+          console.log(`[${sessionId}] location_error ${location.code ?? ""}: ${location.message}`);
+        } else {
+          console.log(
+            `[${sessionId}] location_result ${location.lat}, ${location.lng} ` +
+              `±${location.accuracy}m (${location.measuredAt})`,
+          );
+        }
+      }
 
       const text = REPLIES[replyIndex % REPLIES.length];
       replyIndex += 1;
@@ -146,6 +194,13 @@ wss.on("connection", (ws, req) => {
     console.log(`[${sessionId}] 未知のメッセージ: ${msg.type}`);
   });
 
-  ws.on("close", () => console.log(`[${sessionId}] 切断`));
+  ws.on("close", () => {
+    for (const pending of pendingLocation.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(null);
+    }
+    pendingLocation.clear();
+    console.log(`[${sessionId}] 切断`);
+  });
   ws.on("error", (e) => console.log(`[${sessionId}] エラー: ${e.message}`));
 });

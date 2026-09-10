@@ -14,10 +14,14 @@
    エコーキャンセル付きの高価なデバイスが要らなくなる。
 3. マイクは1本の arecord を使い回す。
    開き直すと ALSA が数百ms 止まり、その間の発話が丸ごと落ちる。
+4. 位置情報は要求されたときだけ返す。
+   GPS は常時読んでキャッシュするが、外へ送るのは location_request を
+   受けたときのみ。詳細は gps_reader.py と docs/gps-notes.md。
 """
 import json
 import os
 import re
+import select
 import subprocess
 import tempfile
 import time
@@ -26,6 +30,8 @@ from urllib.parse import urlencode
 import numpy as np
 import websocket
 from openwakeword.model import Model as WakeModel
+
+from gps_reader import GPSReader, GPSUnavailable
 
 SAMPLE_RATE = 16000
 FRAME = 1280              # 80ms。openWakeWord の想定に合わせている
@@ -49,6 +55,12 @@ WS_URL = os.environ.get("PASSEN_WS", "ws://localhost:8080/ws")
 WAKE_MODEL = os.environ.get("PASSEN_WAKE", "passenger.onnx")
 USER_ID = os.environ.get("PASSEN_USER", "pi-demo")
 DEVICE = os.environ.get("PASSEN_DEVICE", "raspberrypi-4")
+
+# GPS が無い機体でも音声会話は動かしたいので、切れるようにしてある
+USE_GPS = os.environ.get("PASSEN_GPS", "on").lower() not in ("off", "0", "false")
+
+# 常時読み続ける GPS。main() で作る。要求が来たときだけ参照する
+GPS: GPSReader | None = None
 
 
 def list_cards(cmd: str, skip: str) -> list[str]:
@@ -179,6 +191,98 @@ class Session:
             self.last_ping = time.time()
 
 
+def answer_location(session: Session, request_id) -> None:
+    """サーバーからの位置情報要求に答える。
+
+    測位できていなくても必ず返す。無応答だとサーバーが数秒待たされ、
+    その間ユーザーは無言のAIを見つめることになる。
+    """
+    if GPS is None:
+        session.send({
+            "type": "location_error",
+            "requestId": request_id,
+            "code": "NO_DEVICE",
+            "message": "GPSを使わない設定で起動しています",
+        })
+        print("  [位置情報] GPS無効のため NO_DEVICE を返しました")
+        return
+
+    try:
+        fix = GPS.get_fix()
+    except GPSUnavailable as e:
+        session.send({
+            "type": "location_error",
+            "requestId": request_id,
+            "code": e.code,
+            "message": str(e),
+        })
+        print(f"  [位置情報] {e.code}: {e}")
+        return
+
+    session.send({
+        "type": "location_result",
+        "requestId": request_id,
+        "lat": fix.lat,
+        "lng": fix.lng,
+        "accuracy": fix.accuracy,
+        "measuredAt": fix.measured_at_iso(),
+    })
+    print(
+        f"  [位置情報] {fix.lat:.5f}, {fix.lng:.5f} "
+        f"±{fix.accuracy:.0f}m（衛星{fix.satellites}個）を返しました"
+    )
+
+
+def handle_control(session: Session, msg: dict) -> bool:
+    """会話の本筋に関係しない制御メッセージを処理する。扱ったら True。
+
+    どのタイミングでも届きうるので、待ち受け中・応答待ち中・再生中の
+    3箇所から同じ関数を呼んでいる。
+    """
+    kind = msg.get("type")
+
+    if kind == "location_request":
+        answer_location(session, msg.get("requestId"))
+        return True
+
+    if kind in ("pong", "listen", "conversation_ended"):
+        # listen / conversation_ended はサーバー側の多ターン会話用。
+        # 今の Pi は毎回ウェイクワードを待つので、受け流すだけでよい。
+        return True
+
+    return False
+
+
+def poll_control(session: Session) -> None:
+    """待ち受け中に届いた制御メッセージを、マイクを止めずに処理する。
+
+    ここを読まないと location_request が滞留し、サーバーが
+    タイムアウトするまで返事ができない。
+    """
+    sock = session.ws.sock
+    if sock is None:
+        return
+
+    while select.select([sock], [], [], 0)[0]:
+        # 枠が途中まで届いた状態で固まらないよう、上限を置いて読む
+        sock.settimeout(0.3)
+        try:
+            opcode, data = session.ws.recv_data()
+        except (websocket.WebSocketTimeoutException, OSError):
+            return
+        finally:
+            sock.settimeout(None)
+
+        if opcode == websocket.ABNF.OPCODE_CLOSE:
+            raise ConnectionError("サーバーが接続を閉じました")
+        if opcode != websocket.ABNF.OPCODE_TEXT:
+            continue
+
+        msg = json.loads(data.decode())
+        if not handle_control(session, msg):
+            print(f"  [待ち受け中に想定外のメッセージ: {msg.get('type')}]")
+
+
 def stream_utterance(session: Session, mic, silence_rms: float) -> None:
     """発話が終わるまでマイクの音を送り続ける。終わったら end を送る。
 
@@ -224,6 +328,28 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> None:
             return
 
 
+def on_text_during_audio(session: Session, msg: dict) -> None:
+    """再生中に届いたテキストを処理する。
+
+    サーバーは audio_start → 音声 → reply → audio_end の順で送るため、
+    ここで拾わないと返事の文が読み飛ばされる。
+    """
+    kind = msg.get("type")
+
+    if kind == "reply":
+        print(f"  パッセン: {msg.get('text', '')}")
+        place = msg.get("suggestedPlace")
+        if place:
+            print(f"  （提案: {place.get('name')}）")
+    elif kind == "transcript":
+        mark = "" if msg.get("final") else "…"
+        print(f"  あなた: {msg.get('text', '')}{mark}")
+    elif kind == "error":
+        print(f"  [エラー {msg.get('code')}] {msg.get('message')}")
+    elif not handle_control(session, msg):
+        print(f"  [未知のメッセージ: {kind}]")
+
+
 def receive_audio(session: Session, fmt: dict) -> None:
     """audio_start を受けた後の音声を鳴らす。audio_end まで読み続ける。"""
     encoding = fmt.get("encoding", "pcm_s16le")
@@ -235,8 +361,10 @@ def receive_audio(session: Session, fmt: dict) -> None:
             if opcode == websocket.ABNF.OPCODE_BINARY:
                 chunks.append(data)
             elif opcode == websocket.ABNF.OPCODE_TEXT:
-                if json.loads(data.decode()).get("type") == "audio_end":
+                msg = json.loads(data.decode())
+                if msg.get("type") == "audio_end":
                     break
+                on_text_during_audio(session, msg)
             elif opcode == websocket.ABNF.OPCODE_CLOSE:
                 raise ConnectionError("再生中に接続が切れました")
 
@@ -253,8 +381,10 @@ def receive_audio(session: Session, fmt: dict) -> None:
             if opcode == websocket.ABNF.OPCODE_BINARY:
                 player.stdin.write(data)
             elif opcode == websocket.ABNF.OPCODE_TEXT:
-                if json.loads(data.decode()).get("type") == "audio_end":
+                msg = json.loads(data.decode())
+                if msg.get("type") == "audio_end":
                     break
+                on_text_during_audio(session, msg)
             elif opcode == websocket.ABNF.OPCODE_CLOSE:
                 raise ConnectionError("再生中に接続が切れました")
     finally:
@@ -286,7 +416,7 @@ def handle_turn(session: Session, mic, silence_rms: float) -> None:
         elif kind == "error":
             print(f"  [エラー {msg.get('code')}] {msg.get('message')}")
             return
-        elif kind == "pong":
+        elif handle_control(session, msg):
             continue
         else:
             print(f"  [未知のメッセージ: {kind}]")
@@ -329,6 +459,7 @@ def run_once(wake: WakeModel) -> None:
 
             if score <= THRESHOLD:
                 session.maybe_ping()
+                poll_control(session)
                 continue
 
             print(f"[検出 {score:.2f}] どうぞ")
@@ -354,27 +485,42 @@ def run_once(wake: WakeModel) -> None:
 
 
 def main() -> None:
+    global GPS
+
     print("モデルを読み込んでいます…")
     wake = WakeModel(wakeword_model_paths=[WAKE_MODEL])
     print(f"マイク: card {MIC_CARD} / スピーカー: card {SPK_CARD}")
 
-    delay = 1.0
-    while True:
-        try:
-            run_once(wake)
-            delay = 1.0
-        except KeyboardInterrupt:
-            print("\n終了します")
-            return
-        except (websocket.WebSocketException, ConnectionError, OSError) as e:
-            print(f"切断: {e}")
-            print(f"{delay:.0f}秒後に再接続します")
+    if USE_GPS:
+        # 接続より先に始める。コールドスタートに実測26秒かかるので、
+        # 会話が始まる前から測位させておきたい
+        GPS = GPSReader()
+        GPS.start()
+        print(f"GPS: {GPS.status}")
+    else:
+        print("GPS: 無効（PASSEN_GPS=off）")
+
+    try:
+        delay = 1.0
+        while True:
             try:
-                time.sleep(delay)
+                run_once(wake)
+                delay = 1.0
             except KeyboardInterrupt:
                 print("\n終了します")
                 return
-            delay = min(delay * 2, 8.0)   # 1 → 2 → 4 → 8 秒で頭打ち
+            except (websocket.WebSocketException, ConnectionError, OSError) as e:
+                print(f"切断: {e}")
+                print(f"{delay:.0f}秒後に再接続します")
+                try:
+                    time.sleep(delay)
+                except KeyboardInterrupt:
+                    print("\n終了します")
+                    return
+                delay = min(delay * 2, 8.0)   # 1 → 2 → 4 → 8 秒で頭打ち
+    finally:
+        if GPS is not None:
+            GPS.close()
 
 
 if __name__ == "__main__":
