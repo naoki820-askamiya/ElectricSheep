@@ -12,6 +12,48 @@ Pi には**すでに `gpsd` がインストール済み**です（動作確認�
 
 `gpsd` はシリアルポートを占有します。`gps_reader.py` が `pyserial` で `/dev/ttyACM0` を直接開く設計なら、**両方は同時に動きません。** 「データが出てこない」の原因はほぼこれです。
 
+**停止だけでは足りません。** `gpsd.socket` は「誰かが繋いだ瞬間に起動する」
+仕組みなので、止めてもすぐ復活します。`mask` で起動そのものを禁止してください。
+
+```bash
+sudo systemctl mask gpsd.socket gpsd.service
+sudo pkill -x gpsd
+systemctl is-active gpsd.socket gpsd.service    # inactive が2行出れば成功
+```
+
+### gpsd は受信機の設定を書き換えます
+
+実機で起きた事象です。**`gpsd` を止めたあとも NMEA が流れてこなくなりました。**
+
+```
+1回目（gpsd導入前）  GGA / GSA / GSV / GLL が1秒ごとに流れる
+gpsd を動かす
+2回目（gpsd停止後）  何も流れない
+USB を抜き差し       TXT と RMC は流れるが GGA が無い
+```
+
+`gpsd` は u-blox へ UBX コマンドを送り、出力する文の種類を変更します。
+**u-blox は設定をバックアップ電源付きメモリに保持するため、USBを抜き差ししても
+元に戻りません。**
+
+`gps_reader.py` は GGA が無ければ RMC から位置を取るようにしてあります。
+ただし RMC には衛星数と HDOP が無いため、`accuracy` は返せません。
+
+単体実行を `Ctrl+C` で終えると、受け取った文の一覧が出ます。
+
+```
+--- 受け取った NMEA 文 ---
+  $GPRMC: 30回
+  $GPVTG: 30回
+
+  GGA が届いていません。受信機の設定で無効化されています。
+```
+
+GGA を戻したい場合は、UBX の CFG-MSG を送るか、受信機を工場出荷時に戻す
+必要があります。**位置だけ必要なら RMC で足ります。**
+
+---
+
 実装前にどちらかを選んでください。
 
 | 方式 | 内容 |

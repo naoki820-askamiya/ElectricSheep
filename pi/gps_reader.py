@@ -13,10 +13,16 @@ GPS の初回測位（コールドスタート）は実測で26秒かかった�
 
 ■ gpsd と同時に使えない
 どちらもシリアルポートを占有する。gpsd が動いていると
-「データが出てこない」状態になる。無効化しておくこと。
+「データが出てこない」状態になる。停止では復活することがあるので mask する。
 
-    sudo systemctl disable --now gpsd.socket gpsd.service
+    sudo systemctl mask gpsd.socket gpsd.service
+    sudo pkill -x gpsd
     sudo fuser -v /dev/ttyACM0     # 誰が掴んでいるか
+
+さらに gpsd は u-blox へ設定コマンドを送る。実機では gpsd を動かしたあと
+GGA が出なくなった。u-blox は設定をバックアップ電源付きメモリに持つため、
+USBを抜き差ししても戻らない。そのため GGA が無ければ RMC から位置を取る。
+RMC には衛星数と HDOP が無いので、accuracy は None になる。
 
 実機で確認した値と注意点は docs/gps-notes.md にある。
 """
@@ -61,12 +67,20 @@ class GPSUnavailable(Exception):
 
 @dataclass(frozen=True)
 class Fix:
+    """測位結果。
+
+    GGA が使えるときは衛星数と HDOP まで取れるが、受信機の設定で GGA が
+    無効化されていると RMC しか流れてこない。RMC には位置と有効フラグしか
+    無いので、精度に関わる項目は None になりうる。
+    """
+
     lat: float
     lng: float
-    accuracy: float          # 水平誤差の推定値（メートル）
-    satellites: int
-    hdop: float
-    measured_at: float       # time.time()
+    measured_at: float                 # time.time()
+    accuracy: float | None = None      # 水平誤差の推定値（メートル）
+    satellites: int | None = None
+    hdop: float | None = None
+    source: str = "GGA"                # どの文から得たか。ログの手がかり
 
     def measured_at_iso(self) -> str:
         return (
@@ -150,10 +164,43 @@ def parse_gga(line: str) -> Fix | None:
     return Fix(
         lat=round(lat, 6),
         lng=round(lng, 6),
+        measured_at=time.time(),
         accuracy=accuracy,
         satellites=satellites,
         hdop=hdop,
+        source="GGA",
+    )
+
+
+def parse_rmc(line: str) -> Fix | None:
+    """$--RMC から測位結果を取り出す。未測位なら None。
+
+    GGA が無効化された受信機のための代替。位置と有効フラグは取れるが、
+    衛星数と HDOP は含まれないので精度は推定できない。
+
+    実機で gpsd を動かしたあと、GGA が出なくなる事象が起きた。u-blox は
+    設定をバックアップ電源付きのメモリに持つため、USBを抜き差ししても
+    元に戻らない。特定の文に依存しない作りにしておく。
+    """
+    parts = line.split(",")
+    if len(parts) < 7 or not parts[0].endswith("RMC"):
+        return None
+    if parts[2] != "A":                  # A=有効 V=無効
+        return None
+    if not (parts[3] and parts[5]):
+        return None
+
+    try:
+        lat = to_degrees(parts[3], parts[4])
+        lng = to_degrees(parts[5], parts[6])
+    except (ValueError, IndexError):
+        return None
+
+    return Fix(
+        lat=round(lat, 6),
+        lng=round(lng, 6),
         measured_at=time.time(),
+        source="RMC",
     )
 
 
@@ -174,6 +221,11 @@ class GPSReader:
         self._thread: threading.Thread | None = None
         self._serial = None
         self._last_error: str | None = None
+        # GGA が1度でも流れてきたか。流れているなら RMC は無視する
+        # （GGA の方が衛星数と HDOP を持つため）
+        self._gga_seen = False
+        # 受け取った文の種類。設定を疑うときの手がかりになる
+        self._sentences: dict[str, int] = {}
 
     # ------------------------------------------------------------------ #
 
@@ -209,14 +261,26 @@ class GPSReader:
         if fix is None:
             return f"未測位（{error}）" if error else "未測位"
         age = time.time() - fix.measured_at
-        return (
-            f"{fix.lat:.5f}, {fix.lng:.5f}  "
-            f"±{fix.accuracy:.0f}m  衛星{fix.satellites}個  {age:.0f}秒前"
-        )
+        detail = f"{fix.lat:.5f}, {fix.lng:.5f}"
+        if fix.accuracy is not None:
+            detail += f"  ±{fix.accuracy:.0f}m"
+        if fix.satellites is not None:
+            detail += f"  衛星{fix.satellites}個"
+        return f"{detail}  {age:.0f}秒前（{fix.source}）"
 
     def latest(self) -> Fix | None:
         with self._lock:
             return self._fix
+
+    def sentences(self) -> dict[str, int]:
+        """受け取った NMEA 文の種類と回数。
+
+        GGA が 0 なら受信機の設定で無効化されている。gpsd を動かしたあとに
+        起きうる（設定はバックアップ電源付きメモリに残り、USBの抜き差しでは
+        戻らない）。原因の切り分けに使う。
+        """
+        with self._lock:
+            return dict(self._sentences)
 
     def get_fix(
         self,
@@ -304,7 +368,21 @@ class GPSReader:
             line = raw.decode("ascii", errors="ignore").strip()
             if not nmea_checksum_ok(line):
                 continue
-            fix = parse_gga(line)
+
+            talker = line.split(",", 1)[0]
+            with self._lock:
+                self._sentences[talker] = self._sentences.get(talker, 0) + 1
+
+            if talker.endswith("GGA"):
+                # GGA が流れているなら、それだけを信じる。RMC より情報が多い
+                self._gga_seen = True
+                fix = parse_gga(line)
+            elif talker.endswith("RMC") and not self._gga_seen:
+                # GGA が無効化された受信機のための代替
+                fix = parse_rmc(line)
+            else:
+                continue
+
             if fix is None:
                 continue
             with self._lock:

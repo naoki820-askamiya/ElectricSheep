@@ -317,18 +317,24 @@ def answer_location(session: Session, message: dict) -> None:
         fail(e.code, str(e))
         return
 
-    session.send({
+    # accuracy は GGA が使えないと出せない。任意項目なので入れずに送る
+    payload = {
         "type": "location_result",
         "requestId": request_id,
         "lat": fix.lat,
         "lng": fix.lng,
-        "accuracy": fix.accuracy,
         "measuredAt": fix.measured_at_iso(),
-    })
-    print(
-        f"  [位置情報] {fix.lat:.5f}, {fix.lng:.5f} "
-        f"±{fix.accuracy:.0f}m（衛星{fix.satellites}個）を返しました"
-    )
+    }
+    if fix.accuracy is not None:
+        payload["accuracy"] = fix.accuracy
+    session.send(payload)
+
+    detail = f"{fix.lat:.5f}, {fix.lng:.5f}"
+    if fix.accuracy is not None:
+        detail += f" ±{fix.accuracy:.0f}m"
+    if fix.satellites is not None:
+        detail += f"（衛星{fix.satellites}個）"
+    print(f"  [位置情報] {detail} を返しました（{fix.source}）")
 
 
 def handle_server_message(session: Session, message: dict) -> str | None:
