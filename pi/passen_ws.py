@@ -548,27 +548,42 @@ def run_once(wake: WakeModel) -> None:
 
 
 def main() -> None:
+    global GPS
+
     print("モデルを読み込んでいます…")
     wake = WakeModel(wakeword_model_paths=[WAKE_MODEL])
     print(f"マイク: card {MIC_CARD} / スピーカー: card {SPK_CARD}")
 
-    delay = 1.0
-    while True:
-        try:
-            run_once(wake)
-            delay = 1.0
-        except KeyboardInterrupt:
-            print("\n終了します")
-            return
-        except (websocket.WebSocketException, ConnectionError, OSError) as e:
-            print(f"切断: {e}")
-            print(f"{delay:.0f}秒後に再接続します")
+    if USE_GPS:
+        # WebSocket 接続より先に測位を始める。GPS の初回測位には時間が
+        # かかるため、場所登録を頼まれた時点で最新座標を返せるようにする。
+        GPS = GPSReader()
+        GPS.start()
+        print(f"GPS: {GPS.status}")
+    else:
+        print("GPS: 無効（PASSEN_GPS=off）")
+
+    try:
+        delay = 1.0
+        while True:
             try:
-                time.sleep(delay)
+                run_once(wake)
+                delay = 1.0
             except KeyboardInterrupt:
                 print("\n終了します")
                 return
-            delay = min(delay * 2, 8.0)   # 1 → 2 → 4 → 8 秒で頭打ち
+            except (websocket.WebSocketException, ConnectionError, OSError) as e:
+                print(f"切断: {e}")
+                print(f"{delay:.0f}秒後に再接続します")
+                try:
+                    time.sleep(delay)
+                except KeyboardInterrupt:
+                    print("\n終了します")
+                    return
+                delay = min(delay * 2, 8.0)   # 1 → 2 → 4 → 8 秒で頭打ち
+    finally:
+        if GPS is not None:
+            GPS.close()
 
 
 if __name__ == "__main__":
