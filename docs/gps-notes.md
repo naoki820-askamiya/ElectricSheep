@@ -295,14 +295,30 @@ pynmea2       # NMEA のパース（自前で書くなら不要）
 lsusb | grep -i u-blox
 ls -l /dev/serial/by-id/ /dev/ttyACM*
 
-# 2. gpsd が邪魔していないか
+# 2. gpsd が邪魔していないか（何も出なければ空いている）
 sudo fuser -v /dev/ttyACM0
 
-# 3. 生データが流れるか（屋内でも流れる）
-timeout 5 cat /dev/ttyACM0
-
-# 4. 測位できるか（屋外・空が見える場所）
-timeout 60 cat /dev/ttyACM0 | grep --line-buffered GPGGA
+# 3. 受信と測位の状況を見る（屋内でも受信状況は出る）
+cd ~/passen && ./venv/bin/python gps_reader.py
 ```
 
-4番で `$GPGGA,...,1,08,...` のように**測位品質が 1 以上**になれば成功です。
+3番で座標が出れば成功です。測位前は衛星の受信状況が1秒ごとに出るので、待てば測位
+するのか、置き場所が悪いのかを判断できます。
+
+```
+未測位  衛星が見えていません                     ← 空が見えていない。置き場所を変える
+未測位  電波を受信できていません（軌道上 5個）    ← 同上
+未測位  受信中 8個 / 軌道上 10個（最大SNR 28）   ← 受信はできている。待つか屋外へ
+```
+
+### `cat /dev/ttyACM0` での確認はおすすめしません
+
+以前はこの手順に `cat` での確認を載せていましたが、実機では `gps_reader.py`（pyserial）が
+読めているのに、`cat` や `grep` では**何も表示されない**ことがありました。pyserial は開くときに
+端末の設定を整えますが、`cat` は前のプログラムが残した設定のまま開くため、モデム制御線を
+待って止まるのが原因と考えています。どうしても `cat` で見るなら、先に設定を整えます。
+
+```bash
+stty -F /dev/ttyACM0 raw 9600 clocal -echo
+timeout 10 grep -m 5 GPGSV /dev/ttyACM0
+```
