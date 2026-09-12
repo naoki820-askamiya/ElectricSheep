@@ -20,14 +20,19 @@ console.log("");
 try {
   const repository = new FirestorePlaceRepository({ projectId });
 
-  const places = await repository.listPlaces(userId, 5);
+  // 会話と同じ条件（30件）で読む。全件の中身は多いので、表示は先頭だけにする
+  const places = await repository.listPlaces(userId, 30);
+  const shown = places.slice(0, 5);
   console.log(`読み取り: 成功。場所 ${places.length} 件`);
-  for (const place of places) {
+  for (const place of shown) {
     const visit = place.lastVisit;
     const detail = visit
       ? `最後 ${visit.visitedAt} / ${visit.companions.join("、") || "同行者なし"}`
       : "訪問の記録は読めませんでした";
     console.log(`  - ${place.name}（${place.visitCount}回）${detail}`);
+  }
+  if (places.length > shown.length) {
+    console.log(`  （ほか ${places.length - shown.length} 件。表示を先頭5件に省略しています）`);
   }
   if (places.length > 0 && !places.some((place) => place.lastVisit)) {
     console.log("  ※ 場所は読めるのに訪問が読めない場合、複合索引が要ります（上の警告のURLから作成）");
