@@ -72,6 +72,9 @@ VOLUME = float(os.environ.get("PASSEN_VOLUME", "1.0"))
 # 返事を鳴らし始めるまでに貯めておく長さ（秒）。0 にすると届いた先から鳴らす。
 # 通信が一瞬遅れても、この貯金のぶんは鳴らし続けられるので音が途切れにくい
 PREBUFFER_SEC = float(os.environ.get("PASSEN_PREBUFFER", "0.4"))
+# 何秒静かだったら、こちらから行き先を提案しに行くか。0 でこの機能を使わない。
+# 運転中に突然話しかけることになるので、短くしすぎない
+PROACTIVE_SEC = float(os.environ.get("PASSEN_PROACTIVE", "0"))
 # 1 にすると aplay の警告（音が間に合わなかった underrun など）を隠さずに出す
 DEBUG = os.environ.get("PASSEN_DEBUG", "").strip().lower() not in ("", "0", "off", "false")
 
@@ -555,10 +558,8 @@ def wait_for_followup(
     return "no_speech"
 
 
-def handle_conversation(session: Session, mic, silence_rms: float) -> None:
-    """初回発話から、複数ターンの会話が終了するまでを処理する。"""
-    stream_utterance(session, mic, silence_rms)
-
+def follow_turns(session: Session, mic, silence_rms: float) -> None:
+    """返事を鳴らし、次の発話を待つ。会話が終わるまで繰り返す。"""
     while True:
         action, message = receive_model_turn(session)
         if action != "listen":
@@ -573,6 +574,18 @@ def handle_conversation(session: Session, mic, silence_rms: float) -> None:
         outcome = wait_for_followup(session, mic, silence_rms, float(timeout))
         if outcome in {"conversation_ended", "error"}:
             return
+
+
+def handle_conversation(session: Session, mic, silence_rms: float) -> None:
+    """初回発話から、複数ターンの会話が終了するまでを処理する。"""
+    stream_utterance(session, mic, silence_rms)
+    follow_turns(session, mic, silence_rms)
+
+
+def handle_proactive(session: Session, mic, silence_rms: float) -> None:
+    """こちらから話しかける。ユーザーの発話が無い以外は通常の会話と同じ。"""
+    session.send({"type": "nudge"})
+    follow_turns(session, mic, silence_rms)
 
 
 def run_once(wake: WakeModel) -> None:
@@ -602,6 +615,7 @@ def run_once(wake: WakeModel) -> None:
         print(f"環境音から決めた無音の基準: {silence_rms:.0f}")
         wake.reset()
         ambient: deque[float] = deque(maxlen=AMBIENT_FRAMES)
+        quiet_since = time.monotonic()
 
         while True:
             data = mic.stdout.read(FRAME * 2)
@@ -619,6 +633,24 @@ def run_once(wake: WakeModel) -> None:
                 handle_server_message(session, message)
 
             if score <= THRESHOLD:
+                if (
+                    PROACTIVE_SEC > 0
+                    and time.monotonic() - quiet_since >= PROACTIVE_SEC
+                    and len(ambient) >= AMBIENT_FRAMES // 2
+                ):
+                    silence_rms = threshold_from(list(ambient), quantile=0.25)
+                    print(f"[提案] こちらから話しかけます（無音の基準 {silence_rms:.0f}）")
+                    drain(mic.stdout)
+                    handle_proactive(session, mic, silence_rms)
+                    drain(mic.stdout)
+                    wake.reset()
+                    time.sleep(COOLDOWN_SEC)
+                    drain(mic.stdout)
+                    wake.reset()
+                    ambient.clear()
+                    quiet_since = time.monotonic()
+                    print()
+                    continue
                 session.maybe_ping()
                 continue
 
@@ -644,6 +676,7 @@ def run_once(wake: WakeModel) -> None:
             drain(mic.stdout)
             wake.reset()
             ambient.clear()   # 会話の前の音は古いので捨てる
+            quiet_since = time.monotonic()
             print()
     finally:
         mic.terminate()
@@ -658,6 +691,8 @@ def main() -> None:
     print(f"マイク: card {MIC_CARD} / スピーカー: card {SPK_CARD}")
     if VOLUME != 1.0:
         print(f"再生音量: ×{VOLUME:g}")
+    if PROACTIVE_SEC > 0:
+        print(f"{PROACTIVE_SEC:g}秒静かなら、こちらから行き先を提案します")
 
     if USE_GPS:
         # WebSocket 接続より先に測位を始める。GPS の初回測位には時間が

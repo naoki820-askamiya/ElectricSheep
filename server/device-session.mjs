@@ -12,6 +12,14 @@ function safeJsonParse(data) {
   }
 }
 
+// 端末からの合図。ユーザーの声ではないことをモデルに伝える
+const PROACTIVE_CUE =
+  "【合図】これは装置からの合図で、ユーザーはまだ何も話していません。" +
+  "recall_placesを呼び、記録の中から行き先を一つだけ選んで、" +
+  "こちらから短く話しかけてください。" +
+  "ユーザーが何か言ったかのように答えてはいけません。" +
+  "最後に、行ってみますかと一言だけ添えてください。";
+
 function validUserId(value) {
   return (
     typeof value === "string" &&
@@ -90,6 +98,9 @@ export class DeviceSession {
       case "speech_start":
         await this.startUserTurn(false);
         break;
+      case "nudge":
+        await this.startProactiveTurn();
+        break;
       case "end":
         this.endUserTurn(message.reason);
         break;
@@ -124,6 +135,17 @@ export class DeviceSession {
     this.pauseIdleTimer();
     this.state = "listening";
     this.conversation.startUserTurn();
+  }
+
+  async startProactiveTurn() {
+    // 端末が「しばらく静かです」と知らせてきたとき、こちらから話しかける。
+    // 会話中は割り込まない。ユーザーが話している最中に被せないため
+    if (!this.helloReceived) throw new Error("先にhelloを送ってください");
+    if (this.conversation) return;
+    await this.openConversation();
+    this.pauseIdleTimer();
+    this.state = "model_responding";
+    this.conversation.sendCue(PROACTIVE_CUE);
   }
 
   endUserTurn(reason) {
