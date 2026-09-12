@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
@@ -16,6 +17,15 @@ function rejectUpgrade(socket, statusCode, message) {
       "\r\n" +
       body,
   );
+}
+
+function loadDemoSeed(config, placeRepository) {
+  // 発表デモ用の架空データ。memory モードの保存先にだけ流し込む
+  if (!config.seedFile || typeof placeRepository.seed !== "function") return 0;
+  const data = JSON.parse(readFileSync(config.seedFile, "utf8"));
+  const userId = config.firestoreUserIdOverride || data.userId || "pi-demo";
+  placeRepository.seed(userId, data.places ?? []);
+  return (data.places ?? []).length;
 }
 
 export function createBackend({
@@ -112,7 +122,9 @@ const isMain =
 if (isMain) {
   try {
     const config = loadConfig();
-    const backend = createBackend({ config });
+    const placeRepository = createPlaceRepository(config);
+    const seededPlaces = loadDemoSeed(config, placeRepository);
+    const backend = createBackend({ config, placeRepository });
     await backend.listen();
     console.log(
       `パッセンバックエンド起動: ws://${config.host}:${config.port}/ws`,
@@ -120,6 +132,9 @@ if (isMain) {
     console.log(
       `DB: ${config.dbMode} / Gemini Live: ${config.geminiModel} / voice: ${config.geminiVoice}`,
     );
+    if (seededPlaces > 0) {
+      console.log(`デモ用の架空データ ${seededPlaces} 件を読み込みました（${config.seedFile}）`);
+    }
 
     const shutdown = async () => {
       await backend.close();
