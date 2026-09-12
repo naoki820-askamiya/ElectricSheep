@@ -12,6 +12,13 @@ function assertUserId(userId) {
   return userId.trim();
 }
 
+function assertPlaceName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) throw new Error("行きたい場所の名前がありません");
+  if (name.length > 60) throw new Error("行きたい場所の名前が長すぎます");
+  return name;
+}
+
 function toRadians(degrees) {
   return (degrees * Math.PI) / 180;
 }
@@ -151,7 +158,7 @@ export class FirestorePlaceRepository {
     const snapshot = await this.placesRef(userId).get();
     const places = snapshot.docs.map((document) => {
       const data = document.data();
-      return {
+      const entry = {
         id: document.id,
         name: data.name,
         visitCount: data.visitCount ?? 0,
@@ -159,6 +166,8 @@ export class FirestorePlaceRepository {
         isWishlist: Boolean(data.isWishlist),
         lastVisitedAt: toDateString(data.lastVisitedAt),
       };
+      if (data.note) entry.note = data.note;   // 行きたい理由
+      return entry;
     });
     places.sort(byRecency);
 
@@ -179,6 +188,41 @@ export class FirestorePlaceRepository {
       }
     }
     return top;
+  }
+
+  async rememberWish(userId, { name, reason } = {}) {
+    // 行きたい場所には座標が無い。まだ行っていないので現在地では特定できない
+    const placeName = assertPlaceName(name);
+    const note = typeof reason === "string" ? reason.trim() : "";
+    const placesRef = this.placesRef(userId);
+    const existing = await placesRef.where("name", "==", placeName).limit(1).get();
+
+    if (!existing.empty) {
+      const document = existing.docs[0];
+      const update = { isWishlist: true };
+      if (note) update.note = note;
+      await document.ref.update(update);
+      return {
+        placeId: document.id,
+        name: placeName,
+        alreadyKnown: true,
+        visitCount: document.get("visitCount") ?? 0,
+      };
+    }
+
+    const placeRef = placesRef.doc();
+    await placeRef.set({
+      name: placeName,
+      lat: null,
+      lng: null,
+      isFavorite: false,
+      isWishlist: true,
+      visitCount: 0,
+      lastVisitedAt: null,
+      note,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    return { placeId: placeRef.id, name: placeName, alreadyKnown: false, visitCount: 0 };
   }
 
   async commitVisit(draft) {
@@ -225,6 +269,7 @@ export class FirestorePlaceRepository {
         transaction.update(placeRef, {
           visitCount: currentCount + 1,
           lastVisitedAt: FieldValue.serverTimestamp(),
+          isWishlist: false,   // 実際に行ったので、行きたい場所からは外す
         });
       }
 
@@ -279,6 +324,7 @@ export class MemoryPlaceRepository {
           isWishlist: Boolean(place.isWishlist),
           lastVisitedAt: toDateString(place.lastVisitedAt),
         };
+        if (place.note) entry.note = place.note;   // 行きたい理由
         const latest = [...this.visits.values()]
           .filter((visit) => visit.placeId === place.id)
           .sort((left, right) => new Date(right.visitedAt) - new Date(left.visitedAt))[0];
@@ -302,6 +348,7 @@ export class MemoryPlaceRepository {
         isFavorite: Boolean(place.isFavorite),
         isWishlist: Boolean(place.isWishlist),
         visitCount: place.visitCount ?? 0,
+        note: place.note ?? "",
         lastVisitedAt: place.lastVisitedAt ? new Date(place.lastVisitedAt) : null,
         createdAt: new Date(),
       });
@@ -324,6 +371,40 @@ export class MemoryPlaceRepository {
     return this.places.size;
   }
 
+  async rememberWish(userId, { name, reason } = {}) {
+    const placeName = assertPlaceName(name);
+    const note = typeof reason === "string" ? reason.trim() : "";
+    const existing = [...this.places.values()].find(
+      (place) => place.userId === userId && place.name === placeName,
+    );
+    if (existing) {
+      existing.isWishlist = true;
+      if (note) existing.note = note;
+      return {
+        placeId: existing.id,
+        name: placeName,
+        alreadyKnown: true,
+        visitCount: existing.visitCount ?? 0,
+      };
+    }
+
+    const placeId = `place-${this.nextId++}`;
+    this.places.set(placeId, {
+      id: placeId,
+      userId,
+      name: placeName,
+      lat: null,
+      lng: null,
+      isFavorite: false,
+      isWishlist: true,
+      visitCount: 0,
+      note,
+      lastVisitedAt: null,
+      createdAt: new Date(),
+    });
+    return { placeId, name: placeName, alreadyKnown: false, visitCount: 0 };
+  }
+
   async commitVisit(draft) {
     let placeId;
     if (draft.placeChoice.kind === "existing") {
@@ -334,6 +415,7 @@ export class MemoryPlaceRepository {
       }
       place.visitCount += 1;
       place.lastVisitedAt = new Date();
+      place.isWishlist = false;   // 実際に行ったので、行きたい場所からは外す
     } else {
       placeId = `place-${this.nextId++}`;
       this.places.set(placeId, {

@@ -96,6 +96,26 @@ export const LIVE_TOOL_DECLARATIONS = [
     },
   },
   {
+    name: "remember_wish",
+    description:
+      "ユーザーが自分から「いつか行ってみたい」と話した場所を、行きたい場所として記録する。ユーザーが口にした場所だけを渡す。こちらから勧めた場所を登録してはいけない。",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "ユーザーが話した行きたい場所の名前。言い換えずそのまま渡す。",
+        },
+        reason: {
+          type: "string",
+          description: "ユーザーが話した理由。話していなければ送らない。",
+        },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "end_conversation",
     description:
       "ユーザーが会話終了または接続終了を明示した場合に呼ぶ。未保存の下書きを破棄し、短い別れの返答後にGemini Liveセッションを閉じる。",
@@ -136,6 +156,8 @@ export class LiveToolController {
         return this.cancel();
       case "recall_places":
         return this.recall();
+      case "remember_wish":
+        return this.rememberWish(args);
       case "end_conversation":
         return { ...this.cancel(), closeConversation: true };
       default:
@@ -216,6 +238,18 @@ export class LiveToolController {
     }
   }
 
+  async rememberWish(args) {
+    const saved = await this.placeRepository.rememberWish(this.userId, args);
+    return {
+      ok: true,
+      saved,
+      instruction:
+        saved.alreadyKnown && saved.visitCount > 0
+          ? "前に行ったことのある場所です。また行きたい場所として覚えたと短く伝えてください。"
+          : "行きたい場所として覚えたと短く伝えてください。長い説明はしないでください。",
+    };
+  }
+
   async recall() {
     const places = await this.placeRepository.listPlaces(this.userId, 30);
     return {
@@ -224,7 +258,7 @@ export class LiveToolController {
       places,
       instruction:
         places.length > 0
-          ? "この一覧にある場所だけを使って話してください。訪問回数、同行者、日付を作らないでください。一度に並べず、二つか三つに絞って話してください。"
+          ? "この一覧にある場所だけを使って話してください。訪問回数、同行者、日付を作らないでください。一度に並べず、二つか三つに絞って話してください。isWishlistがtrueの場所はまだ行っていない場所です。noteがあれば、それが本人の話した理由です。"
           : "まだ記録がありません。正直にそう伝え、これから一緒に増やしていきましょうと返してください。",
     };
   }
