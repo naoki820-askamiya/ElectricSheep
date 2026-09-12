@@ -186,6 +186,41 @@ test("静かなときの合図で、こちらから話し始める", async () =>
   session.close?.();
 });
 
+test("起動の合図では、まだ行っていない場所を挙げるよう頼む", async () => {
+  const socket = new FakeSocket();
+  const cues = [];
+  const conversation = {
+    async connect() {},
+    startUserTurn() {},
+    sendCue(text) {
+      cues.push(text);
+    },
+    sendAudio() {},
+    endUserTurn() {},
+    close() {},
+  };
+  const session = new DeviceSession({
+    socket,
+    requestUserId: "pi-demo",
+    config: config(),
+    drafts: new VisitDraftStore(),
+    placeRepository: new MemoryPlaceRepository(),
+    conversationFactory: () => conversation,
+  });
+
+  emitJson(socket, {
+    type: "hello",
+    userId: "pi-demo",
+    audio: { encoding: "pcm_s16le", sampleRate: 16000, channels: 1 },
+  });
+  emitJson(socket, { type: "nudge", reason: "greeting" });
+  await session.queue;
+
+  assert.match(cues[0], /挨拶/);
+  assert.match(cues[0], /isWishlist/);
+  assert.equal(session.state, "model_responding");
+});
+
 test("会話中の合図は割り込まずに無視する", async () => {
   const socket = new FakeSocket();
   const calls = [];

@@ -115,8 +115,13 @@ PCM signed 16-bit little-endian / 16000 Hz / モノラル / ヘッダ無し
 会話中に届いた `nudge` は無視されます（ユーザーの発話に被せないため）。
 
 ```json
-{ "type": "nudge" }
+{ "type": "nudge", "reason": "greeting" }
 ```
+
+| `reason` | いつ送るか | サーバーの返し方 |
+| --- | --- | --- |
+| `greeting` | 接続した直後 | 短い挨拶と、まだ行っていない場所の提案 |
+| `idle`（既定） | しばらく静かなとき | 記録の中から行き先を一つ提案 |
 
 Pi側は `PASSEN_PROACTIVE` に秒数を入れたときだけ送ります（既定の 0 は送りません）。
 

@@ -75,6 +75,8 @@ PREBUFFER_SEC = float(os.environ.get("PASSEN_PREBUFFER", "0.4"))
 # 何秒静かだったら、こちらから行き先を提案しに行くか。0 でこの機能を使わない。
 # 運転中に突然話しかけることになるので、短くしすぎない
 PROACTIVE_SEC = float(os.environ.get("PASSEN_PROACTIVE", "0"))
+# 起動して繋がった直後に、挨拶と行きたい場所の提案をするか。off で黙って待つ
+GREET = os.environ.get("PASSEN_GREET", "on").lower() not in ("off", "0", "false")
 # 1 にすると aplay の警告（音が間に合わなかった underrun など）を隠さずに出す
 DEBUG = os.environ.get("PASSEN_DEBUG", "").strip().lower() not in ("", "0", "off", "false")
 
@@ -582,9 +584,9 @@ def handle_conversation(session: Session, mic, silence_rms: float) -> None:
     follow_turns(session, mic, silence_rms)
 
 
-def handle_proactive(session: Session, mic, silence_rms: float) -> None:
+def handle_proactive(session: Session, mic, silence_rms: float, reason: str = "idle") -> None:
     """こちらから話しかける。ユーザーの発話が無い以外は通常の会話と同じ。"""
-    session.send({"type": "nudge"})
+    session.send({"type": "nudge", "reason": reason})
     follow_turns(session, mic, silence_rms)
 
 
@@ -616,6 +618,19 @@ def run_once(wake: WakeModel) -> None:
         wake.reset()
         ambient: deque[float] = deque(maxlen=AMBIENT_FRAMES)
         quiet_since = time.monotonic()
+
+        if GREET:
+            print("[提案] 起動の挨拶をします")
+            drain(mic.stdout)
+            handle_proactive(session, mic, silence_rms, "greeting")
+            drain(mic.stdout)
+            wake.reset()
+            time.sleep(COOLDOWN_SEC)
+            drain(mic.stdout)
+            wake.reset()
+            ambient.clear()
+            quiet_since = time.monotonic()
+            print()
 
         while True:
             data = mic.stdout.read(FRAME * 2)
@@ -691,6 +706,8 @@ def main() -> None:
     print(f"マイク: card {MIC_CARD} / スピーカー: card {SPK_CARD}")
     if VOLUME != 1.0:
         print(f"再生音量: ×{VOLUME:g}")
+    if GREET:
+        print("起動したら、挨拶と行きたい場所の提案をします（PASSEN_GREET=off で無効）")
     if PROACTIVE_SEC > 0:
         print(f"{PROACTIVE_SEC:g}秒静かなら、こちらから行き先を提案します")
 
