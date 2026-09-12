@@ -25,6 +25,31 @@ export function distanceMeters(lat1, lng1, lat2, lng2) {
   return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function toDateString(value) {
+  // 日付を YYYY-MM-DD にそろえる。Firestore の Timestamp と Date と文字列を受ける
+  if (!value) return null;
+  const date = typeof value?.toDate === "function" ? value.toDate() : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function publicVisit(visit) {
+  return {
+    visitedAt: toDateString(visit.visitedAt),
+    companions: visit.companions ?? [],
+    mood: visit.mood ?? "",
+    notableEvent: visit.notableEvent ?? "",
+    isDetour: Boolean(visit.isDetour),
+  };
+}
+
+function byRecency(left, right) {
+  // 最近行った順。まだ行っていない場所（行きたい場所）は後ろにまとめる
+  if (!left.lastVisitedAt && !right.lastVisitedAt) return 0;
+  if (!left.lastVisitedAt) return 1;
+  if (!right.lastVisitedAt) return -1;
+  return left.lastVisitedAt < right.lastVisitedAt ? 1 : -1;
+}
+
 function getAdminFirestore(projectId) {
   const app =
     getApps()[0] ??
@@ -67,6 +92,38 @@ export class FirestorePlaceRepository {
       })
       .filter(Boolean)
       .sort((left, right) => left.distanceMeters - right.distanceMeters);
+  }
+
+  async listPlaces(userId, limit = 30) {
+    const snapshot = await this.placesRef(userId).get();
+    const places = snapshot.docs.map((document) => {
+      const data = document.data();
+      return {
+        id: document.id,
+        name: data.name,
+        visitCount: data.visitCount ?? 0,
+        isFavorite: Boolean(data.isFavorite),
+        isWishlist: Boolean(data.isWishlist),
+        lastVisitedAt: toDateString(data.lastVisitedAt),
+      };
+    });
+    places.sort(byRecency);
+
+    const top = places.slice(0, limit);
+    for (const place of top) {
+      try {
+        const visits = await this.visitsRef(userId)
+          .where("placeId", "==", place.id)
+          .orderBy("visitedAt", "desc")
+          .limit(1)
+          .get();
+        const visit = visits.docs[0]?.data();
+        if (visit) place.lastVisit = publicVisit(visit);
+      } catch {
+        // 複合索引が無い環境では読めない。場所の一覧だけでも返す
+      }
+    }
+    return top;
   }
 
   async commitVisit(draft) {
@@ -153,6 +210,63 @@ export class MemoryPlaceRepository {
       }))
       .filter((place) => place.distanceMeters <= radiusMeters)
       .sort((left, right) => left.distanceMeters - right.distanceMeters);
+  }
+
+  async listPlaces(userId, limit = 30) {
+    const places = [...this.places.values()]
+      .filter((place) => place.userId === userId)
+      .map((place) => {
+        const entry = {
+          id: place.id,
+          name: place.name,
+          visitCount: place.visitCount ?? 0,
+          isFavorite: Boolean(place.isFavorite),
+          isWishlist: Boolean(place.isWishlist),
+          lastVisitedAt: toDateString(place.lastVisitedAt),
+        };
+        const latest = [...this.visits.values()]
+          .filter((visit) => visit.placeId === place.id)
+          .sort((left, right) => new Date(right.visitedAt) - new Date(left.visitedAt))[0];
+        if (latest) entry.lastVisit = publicVisit(latest);
+        return entry;
+      });
+    places.sort(byRecency);
+    return places.slice(0, limit);
+  }
+
+  seed(userId, places = []) {
+    // 発表デモ用の架空データを流し込む。memory モード専用
+    for (const place of places) {
+      const placeId = `place-${this.nextId++}`;
+      this.places.set(placeId, {
+        id: placeId,
+        userId,
+        name: place.name,
+        lat: place.lat,
+        lng: place.lng,
+        isFavorite: Boolean(place.isFavorite),
+        isWishlist: Boolean(place.isWishlist),
+        visitCount: place.visitCount ?? 0,
+        lastVisitedAt: place.lastVisitedAt ? new Date(place.lastVisitedAt) : null,
+        createdAt: new Date(),
+      });
+      for (const visit of place.visits ?? []) {
+        const visitId = `visit-${this.nextId++}`;
+        this.visits.set(visitId, {
+          id: visitId,
+          userId,
+          placeId,
+          visitedAt: visit.visitedAt ? new Date(visit.visitedAt) : new Date(),
+          companions: visit.companions ?? [],
+          conversationSummary: visit.notableEvent ?? "",
+          mood: visit.mood ?? "",
+          isDetour: Boolean(visit.isDetour),
+          notableEvent: visit.notableEvent ?? "",
+          createdAt: new Date(),
+        });
+      }
+    }
+    return this.places.size;
   }
 
   async commitVisit(draft) {

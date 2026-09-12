@@ -204,6 +204,53 @@ def parse_rmc(line: str) -> Fix | None:
     )
 
 
+def parse_gsv(line: str) -> tuple[int, int, int, float, int] | None:
+    """$--GSV の1行を読む。
+
+    返り値は (組の行数, 何行目, 軌道上の衛星数, この行の最大SNR, この行で受信中の数)。
+
+    GSV は衛星4個ごとに1行で、11個なら3行に分かれて届く。1行だけ見ても
+    その行の衛星しか分からないので、組全体の集計は呼び出し側で行う。
+
+    「軌道上の衛星数」は受信機が軌道情報から計算した数で、実際に電波を
+    受けているとは限らない。受信できているかは SNR で判断する（空なら未受信）。
+    測位に効くのは受信できている方の数。
+
+    $GPGSV,3,1,11,04,24,314,19,...*7A
+           │ │ │  │  │   │   └ SNR
+           │ │ │  │  │   └ 方位
+           │ │ │  │  └ 高度
+           │ │ │  └ 衛星番号
+           │ │ └ 軌道上の総数
+           │ └ 何行目
+           └ 全部で何行
+    """
+    # 末尾の *7A を外してから区切る。外さないと最後の衛星の SNR が
+    # 「30*7A」になって読めず、衛星1個のときは常に SNR 0 に見えていた
+    parts = line.split("*", 1)[0].split(",")
+    if len(parts) < 4 or not parts[0].endswith("GSV"):
+        return None
+    try:
+        total = int(parts[1] or 1)
+        number = int(parts[2] or 1)
+        in_view = int(parts[3] or 0)
+    except ValueError:
+        return None
+
+    # 4項目ずつ衛星が並ぶ。4番目が SNR で、受信できていなければ空
+    best = 0.0
+    received = 0
+    for i in range(4, len(parts) - 3, 4):
+        try:
+            snr = float(parts[i + 3])
+        except (ValueError, IndexError):
+            continue
+        if snr > 0:
+            received += 1
+        best = max(best, snr)
+    return total, number, in_view, best, received
+
+
 class GPSReader:
     """バックグラウンドで NMEA を読み続け、最新の測位結果を保持する。
 
@@ -224,6 +271,13 @@ class GPSReader:
         # GGA が1度でも流れてきたか。流れているなら RMC は無視する
         # （GGA の方が衛星数と HDOP を持つため）
         self._gga_seen = False
+        # 測位前の進捗。軌道上の衛星数・受信中の数・最大SNR
+        self._in_view = 0
+        self._received = 0
+        self._best_snr = 0.0
+        # GSV の組を集計している途中の値。読み取りスレッドだけが触る
+        self._gsv_best = 0.0
+        self._gsv_received = 0
         # 受け取った文の種類。設定を疑うときの手がかりになる
         self._sentences: dict[str, int] = {}
 
@@ -258,8 +312,21 @@ class GPSReader:
     def status(self) -> str:
         with self._lock:
             fix, error = self._fix, self._last_error
+            in_view, received = self._in_view, self._received
+            best_snr = self._best_snr
         if fix is None:
-            return f"未測位（{error}）" if error else "未測位"
+            if error:
+                return f"未測位（{error}）"
+            if not in_view:
+                return "未測位  衛星が見えていません"
+            if not received:
+                # 軌道上にはいるはずだが電波が届いていない。置き場所の問題
+                return f"未測位  電波を受信できていません（軌道上 {in_view}個）"
+            # 受信4個以上・SNR 20以上なら、待てば測位できる
+            return (
+                f"未測位  受信中 {received}個 / 軌道上 {in_view}個"
+                f"（最大SNR {best_snr:.0f}）"
+            )
         age = time.time() - fix.measured_at
         detail = f"{fix.lat:.5f}, {fix.lng:.5f}"
         if fix.accuracy is not None:
@@ -271,6 +338,11 @@ class GPSReader:
     def latest(self) -> Fix | None:
         with self._lock:
             return self._fix
+
+    def sky(self) -> tuple[int, int, float]:
+        """軌道上の衛星数・受信中の数・最大SNR。測位前の進捗を見るために使う。"""
+        with self._lock:
+            return self._in_view, self._received, self._best_snr
 
     def sentences(self) -> dict[str, int]:
         """受け取った NMEA 文の種類と回数。
@@ -372,6 +444,25 @@ class GPSReader:
             talker = line.split(",", 1)[0]
             with self._lock:
                 self._sentences[talker] = self._sentences.get(talker, 0) + 1
+
+            if talker.endswith("GSV"):
+                sky = parse_gsv(line)
+                if sky is not None:
+                    total, number, in_view, best, received = sky
+                    # 1組が複数行に分かれて届くので、最初の行で集計を始め、
+                    # 最後の行で確定させる。行ごとに上書きすると、最後の行の
+                    # 衛星しか反映されない
+                    if number == 1:
+                        self._gsv_best = 0.0
+                        self._gsv_received = 0
+                    self._gsv_best = max(self._gsv_best, best)
+                    self._gsv_received += received
+                    if number >= total:
+                        with self._lock:
+                            self._in_view = in_view
+                            self._received = self._gsv_received
+                            self._best_snr = self._gsv_best
+                continue
 
             if talker.endswith("GGA"):
                 # GGA が流れているなら、それだけを信じる。RMC より情報が多い

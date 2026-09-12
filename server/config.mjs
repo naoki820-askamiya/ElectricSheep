@@ -60,5 +60,7 @@ export function loadConfig(env = process.env) {
       env.PASSEN_FIRESTORE_USER_ID?.trim() || null,
     dbMode,
     deviceToken: env.PASSEN_DEVICE_TOKEN?.trim() || null,
+    // 発表デモ用の架空データ。memory モードのときだけ読み込む
+    seedFile: env.PASSEN_SEED_FILE?.trim() || null,
   };
 }

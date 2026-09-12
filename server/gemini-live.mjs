@@ -156,6 +156,11 @@ export class GeminiLiveConversation {
       await this.handleToolCalls(message.toolCall.functionCalls);
     }
 
+    if (serverContent?.interrupted) {
+      // Gemini が発話を途中でやめた。音が途中で切れて聞こえる原因になる
+      console.warn("Gemini が発話を中断しました（interrupted）");
+    }
+
     if (serverContent?.turnComplete) {
       const reply = this.outputTranscript.trim();
       if (reply) this.sendJson({ type: "reply", text: reply });

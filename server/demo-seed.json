@@ -1,0 +1,207 @@
+{
+  "_note": "発表デモ用の架空データ。実在の人物の記録ではありません。PASSEN_SEED_FILE で読み込みます（memory モードのときだけ）。",
+  "userId": "pi-demo",
+  "person": "名城 はると（架空・100歳）",
+  "places": [
+    {
+      "name": "松平郷",
+      "lat": 35.0704,
+      "lng": 137.2324,
+      "visitCount": 34,
+      "isFavorite": true,
+      "isWishlist": false,
+      "lastVisitedAt": "2026-04-12",
+      "visits": [
+        {
+          "visitedAt": "2026-04-12",
+          "companions": ["妻のゆづきさん"],
+          "mood": "穏やか",
+          "notableEvent": "結婚した年から毎年この時期に来ている",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "香嵐渓",
+      "lat": 35.1567,
+      "lng": 137.3128,
+      "visitCount": 21,
+      "isFavorite": true,
+      "isWishlist": false,
+      "lastVisitedAt": "2025-11-23",
+      "visits": [
+        {
+          "visitedAt": "2025-11-23",
+          "companions": ["息子のよしたかさん", "孫のなおきさん"],
+          "mood": "にぎやか",
+          "notableEvent": "なおきさんが初めて紅葉を見て「火がついてるみたい」と言った",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "矢作川の河川敷",
+      "lat": 34.9993,
+      "lng": 137.1401,
+      "visitCount": 58,
+      "isFavorite": false,
+      "isWishlist": false,
+      "lastVisitedAt": "2026-08-30",
+      "visits": [
+        {
+          "visitedAt": "2026-08-30",
+          "companions": [],
+          "mood": "しずか",
+          "notableEvent": "夕方に散歩するのが日課になっている",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "伊良湖岬",
+      "lat": 34.5804,
+      "lng": 137.0086,
+      "visitCount": 6,
+      "isFavorite": true,
+      "isWishlist": false,
+      "lastVisitedAt": "2019-07-15",
+      "visits": [
+        {
+          "visitedAt": "2019-07-15",
+          "companions": ["妻のゆづきさん"],
+          "mood": "うれしい",
+          "notableEvent": "初めて二人で遠出したのがこの岬だった",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "名古屋城",
+      "lat": 35.1856,
+      "lng": 136.8997,
+      "visitCount": 9,
+      "isFavorite": false,
+      "isWishlist": false,
+      "lastVisitedAt": "2023-03-29",
+      "visits": [
+        {
+          "visitedAt": "2023-03-29",
+          "companions": ["孫のなおきさん"],
+          "mood": "たのしい",
+          "notableEvent": "なおきさんの小学校入学のお祝いに行った",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "茶臼山高原",
+      "lat": 35.1683,
+      "lng": 137.6297,
+      "visitCount": 3,
+      "isFavorite": false,
+      "isWishlist": false,
+      "lastVisitedAt": "2016-05-21",
+      "visits": [
+        {
+          "visitedAt": "2016-05-21",
+          "companions": ["息子のよしたかさん"],
+          "mood": "さわやか",
+          "notableEvent": "芝桜が満開で、帰りに道を間違えて山道に入った",
+          "isDetour": true
+        }
+      ]
+    },
+    {
+      "name": "西浦温泉",
+      "lat": 34.7597,
+      "lng": 137.1636,
+      "visitCount": 12,
+      "isFavorite": false,
+      "isWishlist": false,
+      "lastVisitedAt": "2021-12-05",
+      "visits": [
+        {
+          "visitedAt": "2021-12-05",
+          "companions": ["妻のゆづきさん"],
+          "mood": "ほっとした",
+          "notableEvent": "毎年の誕生日はここに泊まっていた",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "豊田スタジアム",
+      "lat": 35.0839,
+      "lng": 137.1706,
+      "visitCount": 17,
+      "isFavorite": false,
+      "isWishlist": false,
+      "lastVisitedAt": "2024-09-14",
+      "visits": [
+        {
+          "visitedAt": "2024-09-14",
+          "companions": ["息子のよしたかさん"],
+          "mood": "興奮した",
+          "notableEvent": "よしたかさんと初めて二人で試合を見に行った場所",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "喫茶 まつば",
+      "lat": 35.0812,
+      "lng": 137.1553,
+      "visitCount": 103,
+      "isFavorite": true,
+      "isWishlist": false,
+      "lastVisitedAt": "2026-09-05",
+      "visits": [
+        {
+          "visitedAt": "2026-09-05",
+          "companions": ["友人のゆうすけさん"],
+          "mood": "いつもどおり",
+          "notableEvent": "40年通っている。モーニングのゆで卵が好き。友人のゆうすけさんとは、ここで毎週のように話している",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "摩耶山 掬星台",
+      "lat": 34.7278,
+      "lng": 135.2267,
+      "visitCount": 5,
+      "isFavorite": true,
+      "isWishlist": false,
+      "lastVisitedAt": "2014-10-18",
+      "visits": [
+        {
+          "visitedAt": "2014-10-18",
+          "companions": ["妻のゆづきさん"],
+          "mood": "しみじみ",
+          "notableEvent": "神戸の夜景が一面に見えるこの展望台で、ゆづきさんにプロポーズした場所。結婚記念日が近づくと二人で登っていた",
+          "isDetour": false
+        }
+      ]
+    },
+    {
+      "name": "能登の千枚田",
+      "lat": 37.4589,
+      "lng": 137.1006,
+      "visitCount": 0,
+      "isFavorite": false,
+      "isWishlist": true,
+      "lastVisitedAt": null,
+      "visits": []
+    },
+    {
+      "name": "美ら海水族館",
+      "lat": 26.6944,
+      "lng": 127.8779,
+      "visitCount": 0,
+      "isFavorite": false,
+      "isWishlist": true,
+      "lastVisitedAt": null,
+      "visits": []
+    }
+  ]
+}

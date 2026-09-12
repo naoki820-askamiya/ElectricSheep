@@ -86,6 +86,16 @@ export const LIVE_TOOL_DECLARATIONS = [
     },
   },
   {
+    name: "recall_places",
+    description:
+      "これまでに記録した場所の一覧を取り出す。思い出の振り返り、次の行き先の提案、人生最後のドライブの計画を求められたときに呼ぶ。返された場所以外を作り話ししてはいけない。",
+    parametersJsonSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     name: "end_conversation",
     description:
       "ユーザーが会話終了または接続終了を明示した場合に呼ぶ。未保存の下書きを破棄し、短い別れの返答後にGemini Liveセッションを閉じる。",
@@ -124,6 +134,8 @@ export class LiveToolController {
         return this.commit(args);
       case "cancel_visit_recording":
         return this.cancel();
+      case "recall_places":
+        return this.recall();
       case "end_conversation":
         return { ...this.cancel(), closeConversation: true };
       default:
@@ -202,6 +214,19 @@ export class LiveToolController {
       this.drafts.restoreCollecting(this.sessionId);
       throw error;
     }
+  }
+
+  async recall() {
+    const places = await this.placeRepository.listPlaces(this.userId, 30);
+    return {
+      ok: true,
+      count: places.length,
+      places,
+      instruction:
+        places.length > 0
+          ? "この一覧にある場所だけを使って話してください。訪問回数、同行者、日付を作らないでください。一度に並べず、二つか三つに絞って話してください。"
+          : "まだ記録がありません。正直にそう伝え、これから一緒に増やしていきましょうと返してください。",
+    };
   }
 
   cancel() {

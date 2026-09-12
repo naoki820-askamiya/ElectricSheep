@@ -50,6 +50,13 @@ SPEECH_START_SEC = 5.0    # 呼びかけてから話し始めるまでの猶予
 UTTERANCE_MAX_SEC = 10.0  # 話し始めてからの上限
 
 COOLDOWN_SEC = 1.0        # 再生後、待ち受けに戻るまでの間
+
+# 無音の基準を決め直すために覚えておく、待ち受け中の直前の音（80ms × 50 = 4秒）。
+# 起動時の1秒だけで決めると、あとからエアコンが回るなど車内の音が変わったときに
+# 黙っても基準を超え続け、話し終わりを判定できずに10秒の上限まで録り続けてしまう。
+AMBIENT_FRAMES = 50
+# 話し終わりの判定に使う、直近の沈黙の長さぶんのフレーム数（1.2秒 ÷ 80ms = 15）
+TRAIL_FRAMES = int(SILENCE_SEC * SAMPLE_RATE / FRAME)
 PING_SEC = 30.0
 FOLLOWUP_PREROLL_FRAMES = 5  # 発話検出直前の400msも送り、語頭を欠かさない
 
@@ -57,6 +64,16 @@ WS_URL = os.environ.get("PASSEN_WS", "ws://localhost:8080/ws")
 WAKE_MODEL = os.environ.get("PASSEN_WAKE", "passenger.onnx")
 USER_ID = os.environ.get("PASSEN_USER", "pi-demo")
 DEVICE = os.environ.get("PASSEN_DEVICE", "raspberrypi-4")
+
+# 返事とビープの音量を上げる倍率。スピーカー側を最大にしても小さいときに使う。
+# 1.0 で無加工、2.0 でおよそ2倍。上げすぎると音が割れる
+VOLUME = float(os.environ.get("PASSEN_VOLUME", "1.0"))
+
+# 返事を鳴らし始めるまでに貯めておく長さ（秒）。0 にすると届いた先から鳴らす。
+# 通信が一瞬遅れても、この貯金のぶんは鳴らし続けられるので音が途切れにくい
+PREBUFFER_SEC = float(os.environ.get("PASSEN_PREBUFFER", "0.4"))
+# 1 にすると aplay の警告（音が間に合わなかった underrun など）を隠さずに出す
+DEBUG = os.environ.get("PASSEN_DEBUG", "").strip().lower() not in ("", "0", "off", "false")
 
 # GPS が無い機体でも音声会話は動かしたいので、切れるようにしてある
 USE_GPS = os.environ.get("PASSEN_GPS", "on").lower() not in ("off", "0", "false")
@@ -96,6 +113,20 @@ def rms(data: bytes) -> float:
     return float(np.sqrt(np.mean(audio * audio)))
 
 
+def threshold_from(levels: list[float], quantile: float = 0.5) -> float:
+    """音量の並びから、無音とみなす基準を決める。
+
+    quantile は「静かな方から何割の位置を暗騒音とみなすか」。起動時の測定は
+    黙っている前提なので中央値でよいが、待ち受け中の音には人の声が混じりうるので、
+    呼び出し側が低めの位置を指定する。
+    """
+    if not levels:
+        return SILENCE_RMS_MIN
+    ordered = sorted(levels)
+    floor = ordered[min(len(ordered) - 1, int(len(ordered) * quantile))]
+    return min(SILENCE_RMS_MAX, max(SILENCE_RMS_MIN, floor * SILENCE_MARGIN))
+
+
 def calibrate(mic, seconds: float = 1.0) -> float:
     """その場の環境音を測り、無音とみなす基準を決める。
     車内と室内では暗騒音が大きく違うため、固定値だと必ずどちらかで外れる。"""
@@ -105,10 +136,7 @@ def calibrate(mic, seconds: float = 1.0) -> float:
         if not data:
             break
         levels.append(rms(data))
-    if not levels:
-        return SILENCE_RMS_MIN
-    floor = sorted(levels)[len(levels) // 2]   # 中央値。突発音に引きずられない
-    return min(SILENCE_RMS_MAX, max(SILENCE_RMS_MIN, floor * SILENCE_MARGIN))
+    return threshold_from(levels)   # 中央値。突発音に引きずられない
 
 
 def open_mic() -> subprocess.Popen:
@@ -138,7 +166,8 @@ def make_beep() -> str:
 
     path = os.path.join(tempfile.gettempdir(), "passen_beep.wav")
     t = np.linspace(0, 0.12, int(SAMPLE_RATE * 0.12), endpoint=False)
-    tone = (np.sin(2 * np.pi * 880 * t) * 0.3 * 32767).astype(np.int16)
+    peak = min(0.9, 0.3 * VOLUME)   # 増幅の指定はビープにも効かせる。割れない範囲で
+    tone = (np.sin(2 * np.pi * 880 * t) * peak * 32767).astype(np.int16)
     with wave.open(path, "wb") as f:
         f.setnchannels(1)
         f.setsampwidth(2)
@@ -150,6 +179,16 @@ def make_beep() -> str:
 BEEP = make_beep()
 
 
+def amplify(data: bytes, gain: float) -> bytes:
+    """再生する音を大きくする。上限を超えた分は頭打ちにして、割れ方を抑える。"""
+    if gain == 1.0 or not data:
+        return data
+    usable = len(data) - (len(data) % 2)   # 16bit なので奇数バイトは端数として残す
+    samples = np.frombuffer(data[:usable], dtype=np.int16).astype(np.float32) * gain
+    louder = np.clip(samples, -32768, 32767).astype(np.int16).tobytes()
+    return louder + data[usable:]
+
+
 def play_file(path: str) -> None:
     subprocess.run(["aplay", "-q", "-D", f"plughw:{SPK_CARD},0", path],
                    stderr=subprocess.DEVNULL)
@@ -159,9 +198,11 @@ def open_raw_player(rate: int, channels: int) -> subprocess.Popen:
     """生の PCM を流し込んで即座に鳴らす。全部届くのを待たずに再生できる。"""
     return subprocess.Popen(
         ["aplay", "-q", "-D", f"plughw:{SPK_CARD},0",
-         "-f", "S16_LE", "-c", str(channels), "-r", str(rate), "-t", "raw"],
+         "-f", "S16_LE", "-c", str(channels), "-r", str(rate), "-t", "raw",
+         # スピーカー側にも0.4秒ぶんの余裕を持たせる。既定は短く、届くのが遅れると切れる
+         "--buffer-time=400000", "--period-time=80000"],
         stdin=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=None if DEBUG else subprocess.DEVNULL,
     )
 
 
@@ -209,6 +250,30 @@ class Session:
         return None
 
 
+def report_end(
+    reason: str,
+    spoken_sec: float,
+    silence_rms: float,
+    recent: deque[float],
+    peak: float = 0.0,
+) -> None:
+    """話し終わりをどう判定したかを表示する。返事が遅い・途中で切れるときの手がかり。"""
+    if reason == "silence":
+        print(f"  [話し終わり: 沈黙で区切り（話した長さ {spoken_sec:.1f}秒）]")
+    elif reason == "timeout":
+        # 最後の1.2秒で最も静かだった瞬間の音量。これが基準を超えていれば、
+        # 黙っていても周りの音が大きく、沈黙と判定できなかったということ
+        quietest = min(recent) if recent else 0.0
+        print(
+            f"  [話し終わり: {UTTERANCE_MAX_SEC:.0f}秒の上限で打ち切り。"
+            f"最後の{SILENCE_SEC:g}秒で最も静かな音 {quietest:.0f} / 無音の基準 {silence_rms:.0f}]"
+        )
+        if quietest >= silence_rms:
+            print("  → 黙っていても周りの音が基準を超えています。エアコンなどを止めてから呼びかけてください")
+    elif reason == "no_speech":
+        print(f"  [話し始めを検出できず（聞こえた最大の音 {peak:.0f} / 基準 {silence_rms:.0f}）]")
+
+
 def stream_utterance(session: Session, mic, silence_rms: float) -> str:
     """発話が終わるまでマイクの音を送り続ける。終わったら end を送る。
 
@@ -220,6 +285,8 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> str:
     start = time.time()
     speech_start: float | None = None   # None のうちはまだ話し始めていない
     silent_since: float | None = None
+    recent: deque[float] = deque(maxlen=TRAIL_FRAMES)
+    peak = 0.0
 
     while True:
         data = mic.stdout.read(FRAME * 2)
@@ -229,7 +296,10 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> str:
         session.ws.send_binary(data)
 
         now = time.time()
-        loud = rms(data) >= silence_rms
+        level = rms(data)
+        recent.append(level)
+        peak = max(peak, level)
+        loud = level >= silence_rms
 
         if loud:
             if speech_start is None:
@@ -241,6 +311,7 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> str:
                 silent_since = now
             elif now - silent_since >= SILENCE_SEC:
                 session.send({"type": "end", "reason": "silence"})
+                report_end("silence", now - speech_start, silence_rms, recent)
                 return "silence"
 
         if speech_start is None:
@@ -248,9 +319,11 @@ def stream_utterance(session: Session, mic, silence_rms: float) -> str:
                 # 呼びかけただけで何も話さなかった場合。
                 # サーバーは音声認識もLLMも呼ばずに済む
                 session.send({"type": "end", "reason": "no_speech"})
+                report_end("no_speech", 0.0, silence_rms, recent, peak)
                 return "no_speech"
         elif now - speech_start >= UTTERANCE_MAX_SEC:
             session.send({"type": "end", "reason": "timeout"})
+            report_end("timeout", now - speech_start, silence_rms, recent)
             return "timeout"
 
 
@@ -267,6 +340,7 @@ def stream_started_utterance(
 
     speech_start = time.time()
     silent_since: float | None = None
+    recent: deque[float] = deque(maxlen=TRAIL_FRAMES)
     while True:
         data = mic.stdout.read(FRAME * 2)
         if not data:
@@ -274,16 +348,20 @@ def stream_started_utterance(
         session.ws.send_binary(data)
 
         now = time.time()
-        if rms(data) >= silence_rms:
+        level = rms(data)
+        recent.append(level)
+        if level >= silence_rms:
             silent_since = None
         elif silent_since is None:
             silent_since = now
         elif now - silent_since >= SILENCE_SEC:
             session.send({"type": "end", "reason": "silence"})
+            report_end("silence", now - speech_start, silence_rms, recent)
             return "silence"
 
         if now - speech_start >= UTTERANCE_MAX_SEC:
             session.send({"type": "end", "reason": "timeout"})
+            report_end("timeout", now - speech_start, silence_rms, recent)
             return "timeout"
 
 
@@ -390,16 +468,24 @@ def receive_audio(session: Session, fmt: dict) -> str:
 
         path = os.path.join(tempfile.gettempdir(), "passen_reply.wav")
         with open(path, "wb") as f:
-            f.write(b"".join(chunks))
+            f.write(amplify(b"".join(chunks), VOLUME))
         play_file(path)
         return "audio_end"
 
-    player = open_raw_player(fmt.get("sampleRate", 24000), fmt.get("channels", 1))
+    rate = fmt.get("sampleRate", 24000)
+    channels = fmt.get("channels", 1)
+    player = open_raw_player(rate, channels)
+    lead = bytearray()                                       # 鳴らす前に貯めておく音
+    lead_bytes = int(rate * 2 * channels * PREBUFFER_SEC)     # 16bit なので1秒 = rate×2
     try:
         while True:
             opcode, data = session.ws.recv_data()
             if opcode == websocket.ABNF.OPCODE_BINARY:
-                player.stdin.write(data)
+                lead += amplify(data, VOLUME)
+                if len(lead) >= lead_bytes:
+                    player.stdin.write(bytes(lead))
+                    lead.clear()
+                    lead_bytes = 0                            # 貯め終わったら以降は素通し
             elif opcode == websocket.ABNF.OPCODE_TEXT:
                 action = handle_server_message(session, json.loads(data.decode()))
                 if action in {"audio_end", "conversation_ended", "error"}:
@@ -407,6 +493,9 @@ def receive_audio(session: Session, fmt: dict) -> str:
             elif opcode == websocket.ABNF.OPCODE_CLOSE:
                 raise ConnectionError("再生中に接続が切れました")
     finally:
+        # 貯めたまま終わる短い返事もあるので、残りを出し切ってから閉じる
+        if lead and player.stdin:
+            player.stdin.write(bytes(lead))
         # 閉じてから待つ。閉じないと aplay が入力の終わりに気づかず止まらない
         if player.stdin:
             player.stdin.close()
@@ -512,12 +601,14 @@ def run_once(wake: WakeModel) -> None:
         silence_rms = calibrate(mic)
         print(f"環境音から決めた無音の基準: {silence_rms:.0f}")
         wake.reset()
+        ambient: deque[float] = deque(maxlen=AMBIENT_FRAMES)
 
         while True:
             data = mic.stdout.read(FRAME * 2)
             if not data:
                 raise ConnectionError("マイクが停止しました")
 
+            ambient.append(rms(data))
             scores = wake.predict(np.frombuffer(data, dtype=np.int16))
             score = max(scores.values())
 
@@ -531,7 +622,12 @@ def run_once(wake: WakeModel) -> None:
                 session.maybe_ping()
                 continue
 
-            print(f"[検出 {score:.2f}] どうぞ")
+            # 呼びかけの直前数秒の音から、無音の基準を決め直す。起動後に車内の音が
+            # 変わっても追従させるため。人の声が混じっても引っぱられないよう、
+            # 静かな方から4分の1の位置を暗騒音とみなす（呼びかけ自体の約1秒も効かない）
+            if len(ambient) >= AMBIENT_FRAMES // 2:
+                silence_rms = threshold_from(list(ambient), quantile=0.25)
+            print(f"[検出 {score:.2f}] どうぞ（無音の基準 {silence_rms:.0f}）")
             session.send({
                 "type": "wake",
                 "score": round(float(score), 3),
@@ -547,6 +643,7 @@ def run_once(wake: WakeModel) -> None:
             time.sleep(COOLDOWN_SEC)
             drain(mic.stdout)
             wake.reset()
+            ambient.clear()   # 会話の前の音は古いので捨てる
             print()
     finally:
         mic.terminate()
@@ -559,6 +656,8 @@ def main() -> None:
     print("モデルを読み込んでいます…")
     wake = WakeModel(wakeword_model_paths=[WAKE_MODEL])
     print(f"マイク: card {MIC_CARD} / スピーカー: card {SPK_CARD}")
+    if VOLUME != 1.0:
+        print(f"再生音量: ×{VOLUME:g}")
 
     if USE_GPS:
         # WebSocket 接続より先に測位を始める。GPS の初回測位には時間が
