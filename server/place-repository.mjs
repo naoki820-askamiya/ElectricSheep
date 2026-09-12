@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { buildConversationSummary } from "./visit-drafts.mjs";
@@ -42,6 +45,19 @@ function publicVisit(visit) {
   };
 }
 
+let visitQueryWarned = false;
+
+function warnVisitQueryOnce(error) {
+  if (visitQueryWarned) return;
+  visitQueryWarned = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(
+    "訪問の記録を読めませんでした。場所の名前だけで話すことになります。\n" +
+      "  複合索引が要るときは、次のメッセージのURLから作成してください。\n" +
+      `  ${message}`,
+  );
+}
+
 function byRecency(left, right) {
   // 最近行った順。まだ行っていない場所（行きたい場所）は後ろにまとめる
   if (!left.lastVisitedAt && !right.lastVisitedAt) return 0;
@@ -50,7 +66,44 @@ function byRecency(left, right) {
   return left.lastVisitedAt < right.lastVisitedAt ? 1 : -1;
 }
 
+function gcloudCredentialPath() {
+  // gcloud auth application-default login で作られる場所
+  const base = process.env.APPDATA || join(homedir(), ".config");
+  return join(base, "gcloud", "application_default_credentials.json");
+}
+
+function assertCredentials() {
+  // 資格情報が無いと、繋いだ瞬間ではなく最初の読み書きで分かりにくい形で失敗する。
+  // 起動時に何が足りないかを日本語で伝える
+  const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (keyPath) {
+    const full = isAbsolute(keyPath) ? keyPath : resolve(process.cwd(), keyPath);
+    if (!existsSync(full)) {
+      throw new Error(
+        `サービスアカウントの鍵が見つかりません: ${full}\n` +
+          "GOOGLE_APPLICATION_CREDENTIALS のパスを確認してください。",
+      );
+    }
+    const inside = relative(process.cwd(), full);
+    if (inside && !inside.startsWith("..") && !isAbsolute(inside)) {
+      console.warn(
+        `注意: 鍵がリポジトリの中にあります（${inside}）。` +
+          "コミットすると誰でもデータを読み書きできます。外へ移してください。",
+      );
+    }
+    return;
+  }
+  if (existsSync(gcloudCredentialPath())) return;
+  throw new Error(
+    "Firestore の資格情報がありません。\n" +
+      "  1. サービスアカウントの鍵（JSON）をリポジトリの外に置く\n" +
+      "  2. .env.local に GOOGLE_APPLICATION_CREDENTIALS=そのファイルのパス を書く\n" +
+      "会話だけ試すなら PASSEN_DB_MODE=memory で起動できます。",
+  );
+}
+
 function getAdminFirestore(projectId) {
+  assertCredentials();
   const app =
     getApps()[0] ??
     initializeApp({
@@ -119,8 +172,10 @@ export class FirestorePlaceRepository {
           .get();
         const visit = visits.docs[0]?.data();
         if (visit) place.lastVisit = publicVisit(visit);
-      } catch {
-        // 複合索引が無い環境では読めない。場所の一覧だけでも返す
+      } catch (error) {
+        // 複合索引が無い環境では読めない。場所の一覧だけでも返すが、
+        // 黙って落とすと「同行者や思い出を覚えていない」形で表に出るので知らせる
+        warnVisitQueryOnce(error);
       }
     }
     return top;
