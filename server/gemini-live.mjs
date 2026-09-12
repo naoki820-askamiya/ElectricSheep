@@ -94,6 +94,17 @@ export class GeminiLiveConversation {
     this.userTurnActive = true;
   }
 
+  sendCue(text) {
+    // 声ではなく文字で合図を送り、モデルから先に話し始めてもらう。
+    // ユーザーの発話ではないことは、システムプロンプトで区別させている
+    if (!this.session) throw new Error("Gemini Liveへ接続していません");
+    this.resetModelTurn();
+    this.session.sendClientContent({
+      turns: [{ role: "user", parts: [{ text }] }],
+      turnComplete: true,
+    });
+  }
+
   sendAudio(bytes) {
     if (!this.session) throw new Error("Gemini Liveへ接続していません");
     if (!this.userTurnActive) this.startUserTurn();

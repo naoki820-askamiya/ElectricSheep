@@ -12,6 +12,24 @@ function safeJsonParse(data) {
   }
 }
 
+// 端末からの合図。ユーザーの声ではないことをモデルに伝える。
+// 起動直後は、まだ行っていない場所を優先して挙げてもらう
+const GREETING_CUE =
+  "【合図】これは装置からの合図で、ユーザーはまだ何も話していません。" +
+  "いま車に乗り込んだところです。ひとこと短く挨拶をして、" +
+  "recall_placesを呼び、isWishlistがtrueの、まだ行っていない場所を一つだけ挙げてください。" +
+  "noteがあれば、その理由を本人の言葉として短く添えてください。" +
+  "まだ行っていない場所が無ければ、記録の中から一つ選んでください。" +
+  "ユーザーが何か言ったかのように答えてはいけません。" +
+  "最後に、行ってみますかと一言だけ添えてください。";
+
+const PROACTIVE_CUE =
+  "【合図】これは装置からの合図で、ユーザーはまだ何も話していません。" +
+  "recall_placesを呼び、記録の中から行き先を一つだけ選んで、" +
+  "こちらから短く話しかけてください。" +
+  "ユーザーが何か言ったかのように答えてはいけません。" +
+  "最後に、行ってみますかと一言だけ添えてください。";
+
 function validUserId(value) {
   return (
     typeof value === "string" &&
@@ -90,6 +108,9 @@ export class DeviceSession {
       case "speech_start":
         await this.startUserTurn(false);
         break;
+      case "nudge":
+        await this.startProactiveTurn(message.reason);
+        break;
       case "end":
         this.endUserTurn(message.reason);
         break;
@@ -124,6 +145,17 @@ export class DeviceSession {
     this.pauseIdleTimer();
     this.state = "listening";
     this.conversation.startUserTurn();
+  }
+
+  async startProactiveTurn(reason) {
+    // 端末が「しばらく静かです」と知らせてきたとき、こちらから話しかける。
+    // 会話中は割り込まない。ユーザーが話している最中に被せないため
+    if (!this.helloReceived) throw new Error("先にhelloを送ってください");
+    if (this.conversation) return;
+    await this.openConversation();
+    this.pauseIdleTimer();
+    this.state = "model_responding";
+    this.conversation.sendCue(reason === "greeting" ? GREETING_CUE : PROACTIVE_CUE);
   }
 
   endUserTurn(reason) {

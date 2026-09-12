@@ -121,3 +121,161 @@ test("normal speech end is forwarded to Gemini", async () => {
   assert.equal(session.state, "model_responding");
   session.close();
 });
+
+test("静かなときの合図で、こちらから話し始める", async () => {
+  const socket = new FakeSocket();
+  const calls = [];
+  const cues = [];
+  const conversation = {
+    async connect() {
+      calls.push("connect");
+    },
+    startUserTurn() {
+      calls.push("startUserTurn");
+    },
+    sendCue(text) {
+      calls.push("sendCue");
+      cues.push(text);
+    },
+    sendAudio() {
+      calls.push("sendAudio");
+    },
+    endUserTurn() {
+      calls.push("endUserTurn");
+    },
+    close() {
+      calls.push("close");
+    },
+  };
+  const session = new DeviceSession({
+    socket,
+    requestUserId: "pi-demo",
+    config: config(),
+    drafts: new VisitDraftStore(),
+    placeRepository: new MemoryPlaceRepository(),
+    conversationFactory: () => conversation,
+  });
+
+  emitJson(socket, {
+    type: "hello",
+    userId: "pi-demo",
+    audio: { encoding: "pcm_s16le", sampleRate: 16000, channels: 1 },
+  });
+  emitJson(socket, { type: "nudge" });
+  await session.queue;
+
+  // ユーザーの発話は無いので、声のターンは始めない
+  assert.deepEqual(calls, ["connect", "sendCue"]);
+  assert.match(cues[0], /【合図】/);
+  assert.match(cues[0], /recall_places/);
+  assert.equal(session.state, "model_responding");
+
+  // 合図のあとは、普通の会話と同じように声を送れる
+  emitJson(socket, { type: "speech_start" });
+  socket.emit("message", Buffer.alloc(2560), true);
+  emitJson(socket, { type: "end", reason: "silence" });
+  await session.queue;
+  assert.deepEqual(calls, [
+    "connect",
+    "sendCue",
+    "startUserTurn",
+    "sendAudio",
+    "endUserTurn",
+  ]);
+
+  session.close?.();
+});
+
+test("起動の合図では、まだ行っていない場所を挙げるよう頼む", async () => {
+  const socket = new FakeSocket();
+  const cues = [];
+  const conversation = {
+    async connect() {},
+    startUserTurn() {},
+    sendCue(text) {
+      cues.push(text);
+    },
+    sendAudio() {},
+    endUserTurn() {},
+    close() {},
+  };
+  const session = new DeviceSession({
+    socket,
+    requestUserId: "pi-demo",
+    config: config(),
+    drafts: new VisitDraftStore(),
+    placeRepository: new MemoryPlaceRepository(),
+    conversationFactory: () => conversation,
+  });
+
+  emitJson(socket, {
+    type: "hello",
+    userId: "pi-demo",
+    audio: { encoding: "pcm_s16le", sampleRate: 16000, channels: 1 },
+  });
+  emitJson(socket, { type: "nudge", reason: "greeting" });
+  await session.queue;
+
+  assert.match(cues[0], /挨拶/);
+  assert.match(cues[0], /isWishlist/);
+  assert.equal(session.state, "model_responding");
+});
+
+test("会話中の合図は割り込まずに無視する", async () => {
+  const socket = new FakeSocket();
+  const calls = [];
+  const conversation = {
+    async connect() {
+      calls.push("connect");
+    },
+    startUserTurn() {
+      calls.push("startUserTurn");
+    },
+    sendCue() {
+      calls.push("sendCue");
+    },
+    sendAudio() {},
+    endUserTurn() {},
+    close() {
+      calls.push("close");
+    },
+  };
+  const session = new DeviceSession({
+    socket,
+    requestUserId: "pi-demo",
+    config: config(),
+    drafts: new VisitDraftStore(),
+    placeRepository: new MemoryPlaceRepository(),
+    conversationFactory: () => conversation,
+  });
+
+  emitJson(socket, {
+    type: "hello",
+    userId: "pi-demo",
+    audio: { encoding: "pcm_s16le", sampleRate: 16000, channels: 1 },
+  });
+  emitJson(socket, { type: "wake", score: 0.9, at: new Date().toISOString() });
+  emitJson(socket, { type: "nudge" });
+  await session.queue;
+
+  assert.deepEqual(calls, ["connect", "startUserTurn"]);
+  assert.equal(sentJson(socket).some((m) => m.type === "error"), false);
+});
+
+test("helloの前の合図は断る", async () => {
+  const socket = new FakeSocket();
+  const session = new DeviceSession({
+    socket,
+    requestUserId: "pi-demo",
+    config: config(),
+    drafts: new VisitDraftStore(),
+    placeRepository: new MemoryPlaceRepository(),
+    conversationFactory: () => ({ async connect() {}, close() {} }),
+  });
+
+  emitJson(socket, { type: "nudge" });
+  await session.queue;
+
+  assert.equal(sentJson(socket).some((m) => m.type === "error"), true);
+  assert.equal(session.conversation, null);
+});

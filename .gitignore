@@ -35,6 +35,13 @@ yarn-error.log*
 # ただし設定のひな形はチームに共有したいので除外しない
 !.env.local.example
 
+# Firebaseのサービスアカウント鍵。
+# これが漏れるとプロジェクトのデータを誰でも全部読み書きできてしまいます。
+# 本来はリポジトリの外に置いてください。これは置いてしまったときの保険です。
+serviceAccountKey.json
+*-adminsdk-*.json
+*serviceAccount*.json
+
 # vercel
 .vercel
 

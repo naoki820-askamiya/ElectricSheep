@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { buildConversationSummary } from "./visit-drafts.mjs";
@@ -7,6 +10,13 @@ function assertUserId(userId) {
     throw new Error("userId が不正です");
   }
   return userId.trim();
+}
+
+function assertPlaceName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) throw new Error("行きたい場所の名前がありません");
+  if (name.length > 60) throw new Error("行きたい場所の名前が長すぎます");
+  return name;
 }
 
 function toRadians(degrees) {
@@ -42,6 +52,19 @@ function publicVisit(visit) {
   };
 }
 
+let visitQueryWarned = false;
+
+function warnVisitQueryOnce(error) {
+  if (visitQueryWarned) return;
+  visitQueryWarned = true;
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(
+    "訪問の記録を読めませんでした。場所の名前だけで話すことになります。\n" +
+      "  複合索引が要るときは、次のメッセージのURLから作成してください。\n" +
+      `  ${message}`,
+  );
+}
+
 function byRecency(left, right) {
   // 最近行った順。まだ行っていない場所（行きたい場所）は後ろにまとめる
   if (!left.lastVisitedAt && !right.lastVisitedAt) return 0;
@@ -50,7 +73,44 @@ function byRecency(left, right) {
   return left.lastVisitedAt < right.lastVisitedAt ? 1 : -1;
 }
 
+function gcloudCredentialPath() {
+  // gcloud auth application-default login で作られる場所
+  const base = process.env.APPDATA || join(homedir(), ".config");
+  return join(base, "gcloud", "application_default_credentials.json");
+}
+
+function assertCredentials() {
+  // 資格情報が無いと、繋いだ瞬間ではなく最初の読み書きで分かりにくい形で失敗する。
+  // 起動時に何が足りないかを日本語で伝える
+  const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  if (keyPath) {
+    const full = isAbsolute(keyPath) ? keyPath : resolve(process.cwd(), keyPath);
+    if (!existsSync(full)) {
+      throw new Error(
+        `サービスアカウントの鍵が見つかりません: ${full}\n` +
+          "GOOGLE_APPLICATION_CREDENTIALS のパスを確認してください。",
+      );
+    }
+    const inside = relative(process.cwd(), full);
+    if (inside && !inside.startsWith("..") && !isAbsolute(inside)) {
+      console.warn(
+        `注意: 鍵がリポジトリの中にあります（${inside}）。` +
+          "コミットすると誰でもデータを読み書きできます。外へ移してください。",
+      );
+    }
+    return;
+  }
+  if (existsSync(gcloudCredentialPath())) return;
+  throw new Error(
+    "Firestore の資格情報がありません。\n" +
+      "  1. サービスアカウントの鍵（JSON）をリポジトリの外に置く\n" +
+      "  2. .env.local に GOOGLE_APPLICATION_CREDENTIALS=そのファイルのパス を書く\n" +
+      "会話だけ試すなら PASSEN_DB_MODE=memory で起動できます。",
+  );
+}
+
 function getAdminFirestore(projectId) {
+  assertCredentials();
   const app =
     getApps()[0] ??
     initializeApp({
@@ -98,7 +158,7 @@ export class FirestorePlaceRepository {
     const snapshot = await this.placesRef(userId).get();
     const places = snapshot.docs.map((document) => {
       const data = document.data();
-      return {
+      const entry = {
         id: document.id,
         name: data.name,
         visitCount: data.visitCount ?? 0,
@@ -106,6 +166,8 @@ export class FirestorePlaceRepository {
         isWishlist: Boolean(data.isWishlist),
         lastVisitedAt: toDateString(data.lastVisitedAt),
       };
+      if (data.note) entry.note = data.note;   // 行きたい理由
+      return entry;
     });
     places.sort(byRecency);
 
@@ -119,11 +181,48 @@ export class FirestorePlaceRepository {
           .get();
         const visit = visits.docs[0]?.data();
         if (visit) place.lastVisit = publicVisit(visit);
-      } catch {
-        // 複合索引が無い環境では読めない。場所の一覧だけでも返す
+      } catch (error) {
+        // 複合索引が無い環境では読めない。場所の一覧だけでも返すが、
+        // 黙って落とすと「同行者や思い出を覚えていない」形で表に出るので知らせる
+        warnVisitQueryOnce(error);
       }
     }
     return top;
+  }
+
+  async rememberWish(userId, { name, reason } = {}) {
+    // 行きたい場所には座標が無い。まだ行っていないので現在地では特定できない
+    const placeName = assertPlaceName(name);
+    const note = typeof reason === "string" ? reason.trim() : "";
+    const placesRef = this.placesRef(userId);
+    const existing = await placesRef.where("name", "==", placeName).limit(1).get();
+
+    if (!existing.empty) {
+      const document = existing.docs[0];
+      const update = { isWishlist: true };
+      if (note) update.note = note;
+      await document.ref.update(update);
+      return {
+        placeId: document.id,
+        name: placeName,
+        alreadyKnown: true,
+        visitCount: document.get("visitCount") ?? 0,
+      };
+    }
+
+    const placeRef = placesRef.doc();
+    await placeRef.set({
+      name: placeName,
+      lat: null,
+      lng: null,
+      isFavorite: false,
+      isWishlist: true,
+      visitCount: 0,
+      lastVisitedAt: null,
+      note,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    return { placeId: placeRef.id, name: placeName, alreadyKnown: false, visitCount: 0 };
   }
 
   async commitVisit(draft) {
@@ -170,6 +269,7 @@ export class FirestorePlaceRepository {
         transaction.update(placeRef, {
           visitCount: currentCount + 1,
           lastVisitedAt: FieldValue.serverTimestamp(),
+          isWishlist: false,   // 実際に行ったので、行きたい場所からは外す
         });
       }
 
@@ -224,6 +324,7 @@ export class MemoryPlaceRepository {
           isWishlist: Boolean(place.isWishlist),
           lastVisitedAt: toDateString(place.lastVisitedAt),
         };
+        if (place.note) entry.note = place.note;   // 行きたい理由
         const latest = [...this.visits.values()]
           .filter((visit) => visit.placeId === place.id)
           .sort((left, right) => new Date(right.visitedAt) - new Date(left.visitedAt))[0];
@@ -247,6 +348,7 @@ export class MemoryPlaceRepository {
         isFavorite: Boolean(place.isFavorite),
         isWishlist: Boolean(place.isWishlist),
         visitCount: place.visitCount ?? 0,
+        note: place.note ?? "",
         lastVisitedAt: place.lastVisitedAt ? new Date(place.lastVisitedAt) : null,
         createdAt: new Date(),
       });
@@ -269,6 +371,40 @@ export class MemoryPlaceRepository {
     return this.places.size;
   }
 
+  async rememberWish(userId, { name, reason } = {}) {
+    const placeName = assertPlaceName(name);
+    const note = typeof reason === "string" ? reason.trim() : "";
+    const existing = [...this.places.values()].find(
+      (place) => place.userId === userId && place.name === placeName,
+    );
+    if (existing) {
+      existing.isWishlist = true;
+      if (note) existing.note = note;
+      return {
+        placeId: existing.id,
+        name: placeName,
+        alreadyKnown: true,
+        visitCount: existing.visitCount ?? 0,
+      };
+    }
+
+    const placeId = `place-${this.nextId++}`;
+    this.places.set(placeId, {
+      id: placeId,
+      userId,
+      name: placeName,
+      lat: null,
+      lng: null,
+      isFavorite: false,
+      isWishlist: true,
+      visitCount: 0,
+      note,
+      lastVisitedAt: null,
+      createdAt: new Date(),
+    });
+    return { placeId, name: placeName, alreadyKnown: false, visitCount: 0 };
+  }
+
   async commitVisit(draft) {
     let placeId;
     if (draft.placeChoice.kind === "existing") {
@@ -279,6 +415,7 @@ export class MemoryPlaceRepository {
       }
       place.visitCount += 1;
       place.lastVisitedAt = new Date();
+      place.isWishlist = false;   // 実際に行ったので、行きたい場所からは外す
     } else {
       placeId = `place-${this.nextId++}`;
       this.places.set(placeId, {
